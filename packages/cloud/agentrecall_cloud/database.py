@@ -110,3 +110,18 @@ async def init_db():
         """)
 
         logger.info("Database initialized successfully")
+
+
+# Extended init for auth_users table
+async def init_auth():
+    """Create auth_users table if not exists."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS auth_users (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)

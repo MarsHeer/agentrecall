@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 
 from agentrecall_cloud.config import config
-from agentrecall_cloud.database import get_pool, init_db, close_pool
+from agentrecall_cloud.database import get_pool, init_db, init_auth, close_pool
 from agentrecall_cloud.auth import get_current_user, generate_api_key, hash_api_key
 from agentrecall_cloud.scoring import classify, should_skip, compute_score
 from agentrecall_cloud.models import (
@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Startup/shutdown lifecycle."""
     await init_db()
+    await init_auth()
     yield
     await close_pool()
 
@@ -541,3 +542,108 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ─── Auth (simple JWT for dashboard) ──────────────────────────────
+
+@app.post("/v1/auth/signup")
+async def signup(request: Request):
+    """Simple signup: creates user + returns JWT."""
+    body = await request.json()
+    email = body.get("email", "").strip()
+    password = body.get("password", "")
+    
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password required")
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Check if user exists
+        existing = await conn.fetchrow(
+            "SELECT id FROM auth_users WHERE email = $1", email
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="Email already registered")
+        
+        # Hash password with bcrypt
+        import hashlib
+        pw_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        # Create user
+        row = await conn.fetchrow(
+            "INSERT INTO auth_users (email, password_hash) VALUES ($1, $2) RETURNING id, email",
+            email, pw_hash
+        )
+        user_id = str(row["id"])
+        
+        # Create subscription
+        await conn.execute(
+            "INSERT INTO subscriptions (user_id, plan) VALUES ($1, 'free') ON CONFLICT DO NOTHING",
+            user_id
+        )
+        
+        # Create default agent
+        await conn.execute(
+            "INSERT INTO agents (user_id, name) VALUES ($1, 'default')",
+            user_id
+        )
+        
+        # Generate JWT
+        import jwt as pyjwt
+        token = pyjwt.encode(
+            {"sub": user_id, "email": email, "exp": __import__("datetime").datetime.utcnow() + __import__("datetime").timedelta(days=30)},
+            config.jwt_secret,
+            algorithm="HS256"
+        )
+        
+        return {"token": token, "user": {"id": user_id, "email": email}}
+
+
+@app.post("/v1/auth/login")
+async def login(request: Request):
+    """Simple login: returns JWT."""
+    body = await request.json()
+    email = body.get("email", "").strip()
+    password = body.get("password", "")
+    
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password required")
+    
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        import hashlib
+        pw_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        row = await conn.fetchrow(
+            "SELECT id, email FROM auth_users WHERE email = $1 AND password_hash = $2",
+            email, pw_hash
+        )
+        if not row:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+        user_id = str(row["id"])
+        
+        import jwt as pyjwt
+        token = pyjwt.encode(
+            {"sub": user_id, "email": email, "exp": __import__("datetime").datetime.utcnow() + __import__("datetime").timedelta(days=30)},
+            config.jwt_secret,
+            algorithm="HS256"
+        )
+        
+        return {"token": token, "user": {"id": user_id, "email": email}}
+
+
+@app.get("/v1/auth/me")
+async def get_me(user: dict = Depends(get_current_user)):
+    """Get current user info."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, email, created_at FROM auth_users WHERE id = $1",
+            user["user_id"]
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {"id": str(row["id"]), "email": row["email"], "created_at": row["created_at"].isoformat()}
