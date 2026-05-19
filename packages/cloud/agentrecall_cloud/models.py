@@ -90,6 +90,10 @@ class SubscriptionResponse(BaseModel):
     stripe_customer_id: Optional[str] = None
 
 
+class PortalResponse(BaseModel):
+    url: str
+
+
 # --- Usage ---
 
 class UsageResponse(BaseModel):

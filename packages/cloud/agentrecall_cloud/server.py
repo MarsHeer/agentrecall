@@ -1,6 +1,7 @@
 """AgentRecall Cloud API — main FastAPI server."""
 
 import logging
+import stripe
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +25,13 @@ from agentrecall_cloud.models import (
     ApiKeyCreatedResponse,
     CountResponse,
     MessageResponse,
+    SubscriptionResponse,
+    PortalResponse,
 )
+
+# Configure Stripe if key is available
+if config.stripe_secret_key:
+    stripe.api_key = config.stripe_secret_key
 
 logger = logging.getLogger(__name__)
 
@@ -761,15 +768,218 @@ async def get_agent(
 
 @app.post("/v1/billing/checkout")
 async def create_checkout(user: dict = Depends(get_current_user)):
-    """Create a Stripe checkout session.
+    """Create a Stripe Checkout session for Pro upgrade ($3/month).
 
-    Stripe integration is not yet configured. Returns a placeholder
-    until STRIPE_SECRET_KEY is provided in the environment.
+    If STRIPE_SECRET_KEY is not configured, returns a graceful fallback.
     """
-    # TODO: when stripe is configured, use:
-    # import stripe
-    # session = stripe.checkout.Session.create(...)
-    return {"url": None, "message": "Stripe integration coming soon"}
+    if not config.stripe_secret_key or not config.stripe_price_id:
+        return {"url": None, "message": "Stripe not configured"}
+
+    pool = await get_pool()
+    user_id = user["user_id"]
+
+    async with pool.acquire() as conn:
+        # Get or create Stripe customer
+        sub = await conn.fetchrow(
+            "SELECT stripe_customer_id FROM subscriptions WHERE user_id = $1",
+            user_id,
+        )
+
+        if sub and sub["stripe_customer_id"]:
+            customer_id = sub["stripe_customer_id"]
+        else:
+            # Look up email for customer creation
+            u = await conn.fetchrow(
+                "SELECT email FROM auth_users WHERE id = $1", user_id
+            )
+            customer = stripe.Customer.create(
+                email=u["email"] if u else None,
+                metadata={"user_id": user_id},
+            )
+            customer_id = customer.id
+            # Upsert subscription row with stripe_customer_id
+            await conn.execute(
+                """
+                INSERT INTO subscriptions (user_id, stripe_customer_id, plan, status)
+                VALUES ($1, $2, 'free', 'active')
+                ON CONFLICT (user_id) DO UPDATE
+                    SET stripe_customer_id = $2, updated_at = now()
+                """,
+                user_id,
+                customer_id,
+            )
+
+    # Create Checkout Session
+    base_url = config.app_base_url
+    session = stripe.checkout.Session.create(
+        customer=customer_id,
+        mode="subscription",
+        line_items=[
+            {
+                "price": config.stripe_price_id,
+                "quantity": 1,
+            }
+        ],
+        success_url=f"{base_url}/dashboard?checkout=success",
+        cancel_url=f"{base_url}/dashboard?checkout=cancelled",
+        metadata={"user_id": user_id},
+    )
+
+    return {"url": session.url}
+
+
+@app.post("/v1/billing/webhook")
+async def stripe_webhook(request: Request):
+    """Handle Stripe webhook events.
+
+    This endpoint does NOT use auth — it verifies requests via
+    Stripe's webhook signature instead.
+    """
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+
+    if not config.stripe_webhook_secret:
+        logger.warning("Stripe webhook received but STRIPE_WEBHOOK_SECRET is not set")
+        return {"received": True}
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, config.stripe_webhook_secret
+        )
+    except stripe.error.SignatureVerificationError as e:
+        logger.warning("Stripe webhook signature verification failed: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid webhook signature")
+
+    pool = await get_pool()
+
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        user_id = session.get("metadata", {}).get("user_id")
+        customer_id = session.get("customer")
+        subscription_id = session.get("subscription")
+
+        if user_id and customer_id and subscription_id:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO subscriptions
+                        (user_id, stripe_customer_id, stripe_subscription_id, plan, status)
+                    VALUES ($1, $2, $3, 'pro', 'active')
+                    ON CONFLICT (user_id) DO UPDATE
+                        SET stripe_customer_id = $2,
+                            stripe_subscription_id = $3,
+                            plan = 'pro',
+                            status = 'active',
+                            updated_at = now()
+                    """,
+                    user_id,
+                    customer_id,
+                    subscription_id,
+                )
+            logger.info("Checkout completed for user %s", user_id)
+
+    elif event["type"] == "customer.subscription.updated":
+        subscription = event["data"]["object"]
+        subscription_id = subscription.get("id")
+        sub_status = subscription.get("status")
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT user_id FROM subscriptions WHERE stripe_subscription_id = $1",
+                subscription_id,
+            )
+            if row:
+                plan = "pro" if sub_status == "active" else "free"
+                await conn.execute(
+                    """
+                    UPDATE subscriptions
+                    SET status = $1, plan = $2, updated_at = now()
+                    WHERE stripe_subscription_id = $3
+                    """,
+                    sub_status,
+                    plan,
+                    subscription_id,
+                )
+            logger.info("Subscription %s updated: %s", subscription_id, sub_status)
+
+    elif event["type"] == "customer.subscription.deleted":
+        subscription = event["data"]["object"]
+        subscription_id = subscription.get("id")
+
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE subscriptions
+                SET plan = 'free', status = 'cancelled', updated_at = now()
+                WHERE stripe_subscription_id = $1
+                """,
+                subscription_id,
+            )
+        logger.info("Subscription %s deleted", subscription_id)
+
+    elif event["type"] == "invoice.payment_failed":
+        invoice = event["data"]["object"]
+        customer_id = invoice.get("customer")
+
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE subscriptions
+                SET status = 'past_due', updated_at = now()
+                WHERE stripe_customer_id = $1
+                """,
+                customer_id,
+            )
+        logger.info("Payment failed for customer %s", customer_id)
+
+    return {"received": True}
+
+
+@app.get("/v1/billing/subscription", response_model=SubscriptionResponse)
+async def get_subscription(user: dict = Depends(get_current_user)):
+    """Get the current subscription status for the user."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT plan, status, stripe_customer_id FROM subscriptions WHERE user_id = $1",
+            user["user_id"],
+        )
+        if not row:
+            return SubscriptionResponse(plan="free", status="active", stripe_customer_id=None)
+
+        return SubscriptionResponse(
+            plan=row["plan"],
+            status=row["status"],
+            stripe_customer_id=row["stripe_customer_id"],
+        )
+
+
+@app.post("/v1/billing/portal")
+async def create_portal(user: dict = Depends(get_current_user)):
+    """Create a Stripe Customer Portal session for subscription management."""
+    if not config.stripe_secret_key:
+        return {"url": None, "message": "Stripe not configured"}
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT stripe_customer_id FROM subscriptions WHERE user_id = $1",
+            user["user_id"],
+        )
+
+    if not row or not row["stripe_customer_id"]:
+        raise HTTPException(
+            status_code=400,
+            detail="No Stripe customer found. Subscribe first.",
+        )
+
+    base_url = config.app_base_url
+    portal_session = stripe.billing_portal.Session.create(
+        customer=row["stripe_customer_id"],
+        return_url=f"{base_url}/dashboard/settings",
+    )
+
+    return {"url": portal_session.url}
 
 
 # ─── Main ────────────────────────────────────────────────────────────

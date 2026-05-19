@@ -26,6 +26,15 @@ class Config:
     stripe_webhook_secret: str = field(
         default_factory=lambda: os.getenv("STRIPE_WEBHOOK_SECRET", "")
     )
+    stripe_price_id: str = field(
+        default_factory=lambda: os.getenv("STRIPE_PRICE_ID", "")
+    )
+    app_base_url: str = field(
+        default_factory=lambda: os.getenv(
+            "APP_BASE_URL",
+            "https://agentmemory-landing-swart.vercel.app",
+        )
+    )
     jwt_secret: str = field(
         default_factory=lambda: os.getenv("JWT_SECRET", "dev-secret-change-me")
     )
