@@ -26,16 +26,3 @@ Thumbs.db
 .env
 .env.local
 .npmrc
-node_modules/
-dist/
-
-# Next.js build
-.next/
-out/
-.vercel/
-
-# Landing build
-packages/landing/.next/
-packages/landing/out/
-packages/docs/.next/
-packages/docs/out/

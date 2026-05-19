@@ -31,43 +31,27 @@ await store.remember("User prefers dark mode", { agent: "assistant" });
 const memories = await store.recall("What theme should I use?", { agent: "assistant" });
 ```
 
-## Graph Memory (Cloud Pro)
+## Cloud Mode
 
-AgentRecall Cloud Pro includes a Neo4j-backed knowledge graph that automatically
-extracts entities and relationships from your memories.
+Both SDKs support a cloud mode that connects to the AgentRecall Cloud API:
 
 **Python:**
 ```python
-from agentrecall import CloudClient
+from agentrecall import CloudClient, AgentMemoryConfig
 
+config = AgentMemoryConfig(cloud_url="https://api.agentrecall.cloud", api_key="your-key")
 client = CloudClient(config)
-# Store a memory — entities auto-extracted
-client.remember("Alice works at Acme Corp in San Francisco", agent="assistant")
-
-# Query the graph
-stats = client.graph_stats("assistant")
-print(f"{stats['total_entities']} entities in graph")
-
-# Find connected entities
-neighbors = client.graph_entity_neighbors("Alice", "assistant")
-print(f"Alice is connected to {len(neighbors['neighbors'])} entities")
-
-# Smart context retrieval
-context = client.graph_context("assistant", "Where does Alice work?")
+client.remember("User prefers dark mode", agent="assistant")
+memories = client.recall("What theme should I use?", agent="assistant")
 ```
 
 **Node.js:**
 ```typescript
 import { CloudClient } from "agentrecall";
 
-const client = new CloudClient(url, apiKey);
-// Store — entities auto-extracted
-await client.remember("Alice works at Acme Corp in San Francisco", { agent: "assistant" });
-
-// Graph queries
-const stats = await client.graphStats("assistant");
-const neighbors = await client.graphEntityNeighbors("Alice", "assistant");
-const context = await client.graphContext("assistant", "Where does Alice work?");
+const client = new CloudClient("https://api.agentrecall.cloud", "your-key");
+await client.remember("User prefers dark mode", { agent: "assistant" });
+const memories = await client.recall("What theme should I use?", { agent: "assistant" });
 ```
 
 ## Features
@@ -77,7 +61,6 @@ const context = await client.graphContext("assistant", "Where does Alice work?")
 - **Confidence Decay** — memories fade unless reinforced
 - **Skip/Penalty** — mark irrelevant memories to reduce recall score
 - **SQLite** — zero config, works offline, single file
-- **Graph Memory** — Neo4j-powered entity/relationship graph for semantic connections (Cloud Pro)
 - **Privacy First** — runs locally, no data leaves your machine
 
 ## Pricing
