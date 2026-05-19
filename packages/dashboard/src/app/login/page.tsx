@@ -2,11 +2,13 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { signIn, signUp } from "@/lib/supabase";
+import { signIn, signUp, loginWithApiKey } from "@/lib/supabase";
 
 export default function LoginPage() {
+  const [authTab, setAuthTab] = useState<"human" | "agent">("human");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [apiKey, setApiKey] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [mode, setMode] = useState<"login" | "signup">("login");
@@ -28,6 +30,20 @@ export default function LoginPage() {
       }
     } catch (err: any) {
       setError(err.message || "Authentication failed");
+    }
+    setLoading(false);
+  }
+
+  async function handleApiKey(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+
+    try {
+      await loginWithApiKey(apiKey);
+      router.push("/dashboard");
+    } catch (err: any) {
+      setError(err.message || "API key authentication failed");
     }
     setLoading(false);
   }
@@ -68,50 +84,104 @@ export default function LoginPage() {
           </p>
         </div>
 
-        <form onSubmit={handleEmail} className="space-y-3">
-          <input
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            className="w-full"
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            minLength={6}
-            className="w-full"
-          />
-          {error && (
-            <p className="text-[var(--color-danger)] text-xs">{error}</p>
-          )}
+        {/* Auth Tab Toggle */}
+        <div className="flex rounded-lg overflow-hidden border border-[var(--color-border)] bg-[var(--color-surface)]">
           <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-2.5 rounded-lg bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white text-sm font-medium transition-colors disabled:opacity-50"
+            onClick={() => { setAuthTab("human"); setError(""); }}
+            className={`flex-1 py-2.5 text-sm font-medium transition-colors ${
+              authTab === "human"
+                ? "bg-[var(--color-accent)] text-white"
+                : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+            }`}
           >
-            {loading ? "..." : mode === "login" ? "Sign In" : "Create Account"}
+            👤 Human
           </button>
-        </form>
+          <button
+            onClick={() => { setAuthTab("agent"); setError(""); }}
+            className={`flex-1 py-2.5 text-sm font-medium transition-colors ${
+              authTab === "agent"
+                ? "bg-[var(--color-accent)] text-white"
+                : "text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+            }`}
+          >
+            🤖 Agent
+          </button>
+        </div>
 
-        <p className="text-center text-xs text-[var(--color-text-muted)]">
-          {mode === "login"
-            ? "Don't have an account?"
-            : "Already have an account?"}{" "}
-          <button
-            onClick={() => {
-              setMode(mode === "login" ? "signup" : "login");
-              setError("");
-            }}
-            className="text-[var(--color-accent)] hover:underline"
-          >
-            {mode === "login" ? "Sign up" : "Sign in"}
-          </button>
-        </p>
+        {/* Human Login */}
+        {authTab === "human" && (
+          <form onSubmit={handleEmail} className="space-y-3">
+            <input
+              type="email"
+              placeholder="Email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              className="w-full"
+            />
+            <input
+              type="password"
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              minLength={6}
+              className="w-full"
+            />
+            {error && (
+              <p className="text-[var(--color-danger)] text-xs">{error}</p>
+            )}
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-2.5 rounded-lg bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white text-sm font-medium transition-colors disabled:opacity-50"
+            >
+              {loading ? "..." : mode === "login" ? "Sign In" : "Create Account"}
+            </button>
+            <p className="text-center text-xs text-[var(--color-text-muted)]">
+              {mode === "login"
+                ? "Don't have an account?"
+                : "Already have an account?"}{" "}
+              <button
+                type="button"
+                onClick={() => {
+                  setMode(mode === "login" ? "signup" : "login");
+                  setError("");
+                }}
+                className="text-[var(--color-accent)] hover:underline"
+              >
+                {mode === "login" ? "Sign up" : "Sign in"}
+              </button>
+            </p>
+          </form>
+        )}
+
+        {/* Agent API Key Login */}
+        {authTab === "agent" && (
+          <form onSubmit={handleApiKey} className="space-y-3">
+            <p className="text-xs text-[var(--color-text-muted)] text-center">
+              Paste your API key (ark_...) to authenticate
+            </p>
+            <input
+              type="password"
+              placeholder="ark_..."
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              required
+              className="w-full font-mono text-sm"
+            />
+            {error && (
+              <p className="text-[var(--color-danger)] text-xs">{error}</p>
+            )}
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full py-2.5 rounded-lg bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white text-sm font-medium transition-colors disabled:opacity-50"
+            >
+              {loading ? "..." : "Authenticate with API Key"}
+            </button>
+          </form>
+        )}
       </div>
     </div>
   );

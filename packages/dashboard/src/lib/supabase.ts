@@ -74,3 +74,40 @@ export async function getUser() {
 export async function signOut() {
   removeToken();
 }
+
+// API Key auth for agents
+function getApiKeyFromStorage(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("agentrecall_api_key");
+}
+
+export function storeApiKey(key: string) {
+  localStorage.setItem("agentrecall_api_key", key);
+}
+
+export function getApiKey(): string | null {
+  return getApiKeyFromStorage();
+}
+
+export async function isAuthenticated(): Promise<boolean> {
+  const token = getToken();
+  if (token) return true;
+  const apiKey = getApiKeyFromStorage();
+  return !!apiKey;
+}
+
+export async function loginWithApiKey(apiKey: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/v1/auth/api-key`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "API key authentication failed");
+  }
+  const data = await res.json();
+  // Store the JWT token returned from validation
+  if (data.token) setToken(data.token);
+  storeApiKey(apiKey);
+}
