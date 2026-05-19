@@ -44,6 +44,17 @@ class Config:
             "https://agentmemory-landing-swart.vercel.app,http://localhost:3000",
         ).split(",")
     )
+    # RunPod (AI processing)
+    runpod_api_key: str = field(
+        default_factory=lambda: os.getenv("RUNPOD_API_KEY", "")
+    )
+    runpod_endpoint_id: str = field(
+        default_factory=lambda: os.getenv("RUNPOD_ENDPOINT_ID", "")
+    )
+    # DeepSeek API (optional alternative to RunPod)
+    deepseek_api_key: str = field(
+        default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", "")
+    )
     # Free tier limits
     free_tier_memories: int = 10000
     free_tier_api_calls_daily: int = 1000

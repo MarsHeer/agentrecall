@@ -1,5 +1,6 @@
 """AgentRecall Cloud API — main FastAPI server."""
 
+import asyncio
 import json
 import logging
 import stripe
@@ -12,6 +13,7 @@ from agentrecall_cloud.config import config
 from agentrecall_cloud.database import get_pool, init_db, init_auth, close_pool
 from agentrecall_cloud.auth import get_current_user, generate_api_key, hash_api_key
 from agentrecall_cloud.scoring import classify, should_skip, compute_score
+from agentrecall_cloud.processor import enrich_memory
 import bcrypt
 from agentrecall_cloud.models import (
     MemoryCreate,
@@ -141,6 +143,9 @@ async def remember(
         # Track usage
         await _track_usage(conn, user_id, memories_stored=1)
 
+        # Launch async AI enrichment (non-blocking)
+        asyncio.create_task(enrich_memory(row["id"], req.content, agent_id))
+
         return MemoryResponse(
             id=row["id"],
             agent_id=str(row["agent_id"]),
@@ -153,6 +158,11 @@ async def remember(
             created_at=row["created_at"].isoformat(),
             updated_at=row["updated_at"].isoformat(),
             metadata=row["metadata"] if isinstance(row["metadata"], dict) else {},
+            ai_processed=row.get("ai_processed", False),
+            summary=row.get("summary", ""),
+            keywords=row.get("keywords", []) or [],
+            entities=[],
+            relationships=[],
         )
 
 

@@ -111,6 +111,56 @@ async def init_db():
 
         logger.info("Database initialized successfully")
 
+        # ─── AI Processing Migration (v2) ──────────────────────────────
+        # Add entities table for graph relationships
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS entities (
+                id BIGSERIAL PRIMARY KEY,
+                memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL DEFAULT 'concept',
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_entities_memory ON entities(memory_id)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name)"
+        )
+
+        # Add relationships table
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS relationships (
+                id BIGSERIAL PRIMARY KEY,
+                memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                source TEXT NOT NULL,
+                target TEXT NOT NULL,
+                relation_type TEXT NOT NULL DEFAULT 'related_to',
+                created_at TIMESTAMPTZ DEFAULT now()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_relationships_memory ON relationships(memory_id)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_relationships_source ON relationships(source)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_relationships_target ON relationships(target)"
+        )
+
+        # Add AI processing status to memories
+        await conn.execute("""
+            ALTER TABLE memories ADD COLUMN IF NOT EXISTS ai_processed BOOLEAN DEFAULT false
+        """)
+        await conn.execute("""
+            ALTER TABLE memories ADD COLUMN IF NOT EXISTS summary TEXT DEFAULT ''
+        """)
+        await conn.execute("""
+            ALTER TABLE memories ADD COLUMN IF NOT EXISTS keywords TEXT[] DEFAULT '{}'
+        """)
+
 
 # Extended init for auth_users table
 async def init_auth():

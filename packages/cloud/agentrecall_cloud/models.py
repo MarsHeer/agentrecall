@@ -25,6 +25,11 @@ class MemoryResponse(BaseModel):
     created_at: str
     updated_at: str
     metadata: dict = Field(default_factory=dict)
+    ai_processed: bool = False
+    summary: str = ""
+    keywords: list = Field(default_factory=list)
+    entities: list = Field(default_factory=list)
+    relationships: list = Field(default_factory=list)
 
 
 class RecallResult(BaseModel):
