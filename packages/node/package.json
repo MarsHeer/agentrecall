@@ -36,9 +36,5 @@
     "type": "git",
     "url": "git+https://github.com/MarsHeer/agentrecall.git",
     "directory": "packages/node"
-  },
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
   }
 }
