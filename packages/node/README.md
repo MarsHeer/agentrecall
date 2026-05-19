@@ -5,13 +5,13 @@ Plug-and-play persistent memory for AI agents. SQLite-backed with optional seman
 ## Installation
 
 ```bash
-npm install agentrecall
+npm install agentrecall-ai-sdk
 ```
 
 ## Quick Start
 
 ```typescript
-import { MemoryStore } from "agentrecall";
+import { MemoryStore } from "agentrecall-ai-sdk";
 
 const store = new MemoryStore({ dbPath: "~/.agentrecall/memories.db" });
 
