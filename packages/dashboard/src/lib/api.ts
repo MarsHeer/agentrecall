@@ -167,3 +167,99 @@ export async function deleteApiKey(id: string): Promise<void> {
   const res = await authFetch(`/v1/api-keys/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error("Failed to revoke API key");
 }
+
+// ─── Graph Memory ───────────────────────────────────────────────
+
+export interface GraphEntity {
+  name: string;
+  type: string;
+  memory_count: number;
+  first_seen: string | null;
+  last_seen: string | null;
+}
+
+export interface GraphRelationship {
+  source: string;
+  target: string;
+  relation_type: string;
+  memory_ids: number[];
+  strength: number;
+}
+
+export interface GraphStats {
+  total_entities: number;
+  total_relationships: number;
+  total_memories_in_graph: number;
+  entity_types: Record<string, number>;
+  top_entities: { name: string; connections: number }[];
+}
+
+export interface GraphContextResult {
+  entity: GraphEntity;
+  memories: { summary: string; memory_id: number }[];
+  connected_entities: { name: string; type: string; relationship: string }[];
+}
+
+export async function getGraphEntities(agentId: string, type?: string, limit = 50): Promise<GraphEntity[]> {
+  const params = new URLSearchParams({ agent_id: agentId, limit: String(limit) });
+  if (type) params.set("type", type);
+  const res = await authFetch(`/v1/graph/entities?${params}`);
+  if (!res.ok) throw new Error("Failed to fetch graph entities");
+  return res.json();
+}
+
+export async function getGraphEntityNeighbors(
+  agentId: string,
+  entityName: string,
+  depth = 1
+): Promise<{ entity: GraphEntity | null; neighbors: any[] }> {
+  const params = new URLSearchParams({ agent_id: agentId, depth: String(depth) });
+  const encoded = encodeURIComponent(entityName);
+  const res = await authFetch(`/v1/graph/entities/${encoded}/neighbors?${params}`);
+  if (!res.ok) throw new Error("Failed to fetch entity neighbors");
+  return res.json();
+}
+
+export async function getGraphRelationships(
+  agentId: string,
+  source?: string,
+  target?: string,
+  limit = 50
+): Promise<GraphRelationship[]> {
+  const params = new URLSearchParams({ agent_id: agentId, limit: String(limit) });
+  if (source) params.set("source", source);
+  if (target) params.set("target", target);
+  const res = await authFetch(`/v1/graph/relationships?${params}`);
+  if (!res.ok) throw new Error("Failed to fetch graph relationships");
+  return res.json();
+}
+
+export async function getGraphPaths(
+  agentId: string,
+  from: string,
+  to: string,
+  maxDepth = 5
+): Promise<{ path: any[]; length: number }> {
+  const params = new URLSearchParams({ agent_id: agentId, from, to, max_depth: String(maxDepth) });
+  const res = await authFetch(`/v1/graph/paths?${params}`);
+  if (!res.ok) throw new Error("Failed to find graph path");
+  return res.json();
+}
+
+export async function getGraphStats(agentId: string): Promise<GraphStats> {
+  const params = new URLSearchParams({ agent_id: agentId });
+  const res = await authFetch(`/v1/graph/stats?${params}`);
+  if (!res.ok) throw new Error("Failed to fetch graph stats");
+  return res.json();
+}
+
+export async function getGraphContext(
+  agentId: string,
+  query: string,
+  limit = 10
+): Promise<{ results: GraphContextResult[] }> {
+  const params = new URLSearchParams({ agent_id: agentId, query, limit: String(limit) });
+  const res = await authFetch(`/v1/graph/context?${params}`);
+  if (!res.ok) throw new Error("Failed to fetch graph context");
+  return res.json();
+}

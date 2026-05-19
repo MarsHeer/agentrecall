@@ -222,3 +222,99 @@ class CloudClient:
             resp.raise_for_status()
             for a in resp.json():
                 self.wipe(agent=a["name"], category=category)
+
+    # -- Graph methods (Cloud Pro) ----------------------------------------
+
+    def graph_entities(
+        self,
+        agent: str = "default",
+        type: str = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """List all entities in the knowledge graph for an agent."""
+        self._check_closed()
+        agent_id = self._resolve_agent_id(agent)
+        params: dict = {"agent_id": agent_id, "limit": limit}
+        if type:
+            params["type"] = type
+        resp = self._http.get("/v1/graph/entities", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    def graph_entity_neighbors(
+        self,
+        entity_name: str,
+        agent: str = "default",
+        depth: int = 1,
+    ) -> dict:
+        """Get neighboring entities connected to a specific entity."""
+        self._check_closed()
+        agent_id = self._resolve_agent_id(agent)
+        params: dict = {"agent_id": agent_id, "depth": depth}
+        resp = self._http.get(
+            f"/v1/graph/entities/{entity_name}/neighbors", params=params
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def graph_relationships(
+        self,
+        agent: str = "default",
+        source: str = None,
+        target: str = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """List relationships between entities in the graph."""
+        self._check_closed()
+        agent_id = self._resolve_agent_id(agent)
+        params: dict = {"agent_id": agent_id, "limit": limit}
+        if source:
+            params["source"] = source
+        if target:
+            params["target"] = target
+        resp = self._http.get("/v1/graph/relationships", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    def graph_paths(
+        self,
+        from_entity: str,
+        to_entity: str,
+        agent: str = "default",
+        max_depth: int = 5,
+    ) -> dict:
+        """Find the shortest path between two entities in the graph."""
+        self._check_closed()
+        agent_id = self._resolve_agent_id(agent)
+        params: dict = {
+            "agent_id": agent_id,
+            "from": from_entity,
+            "to": to_entity,
+            "max_depth": max_depth,
+        }
+        resp = self._http.get("/v1/graph/paths", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    def graph_stats(self, agent: str = "default") -> dict:
+        """Get statistics about the knowledge graph for an agent."""
+        self._check_closed()
+        agent_id = self._resolve_agent_id(agent)
+        params: dict = {"agent_id": agent_id}
+        resp = self._http.get("/v1/graph/stats", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    def graph_context(
+        self,
+        query: str,
+        agent: str = "default",
+        limit: int = 10,
+    ) -> dict:
+        """Retrieve graph context relevant to a natural language query."""
+        self._check_closed()
+        agent_id = self._resolve_agent_id(agent)
+        params: dict = {"agent_id": agent_id, "query": query, "limit": limit}
+        resp = self._http.get("/v1/graph/context", params=params)
+        resp.raise_for_status()
+        return resp.json()

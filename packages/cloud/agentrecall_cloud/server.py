@@ -5,7 +5,7 @@ import json
 import logging
 import stripe
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 
@@ -30,6 +30,12 @@ from agentrecall_cloud.models import (
     MessageResponse,
     SubscriptionResponse,
     PortalResponse,
+    EntityResponse,
+    EntityNeighborsResponse,
+    RelationshipResponse,
+    GraphStatsResponse,
+    GraphPathResponse,
+    GraphContextResponse,
 )
 
 # Configure Stripe if key is available
@@ -44,7 +50,11 @@ async def lifespan(app: FastAPI):
     """Startup/shutdown lifecycle."""
     await init_db()
     await init_auth()
+    # Initialize Neo4j graph (gracefully degrades if unavailable)
+    from agentrecall_cloud.graph_db import init_graph_db, close_graph_db
+    await init_graph_db()
     yield
+    await close_graph_db()
     await close_pool()
 
 
@@ -997,6 +1007,254 @@ async def create_portal(user: dict = Depends(get_current_user)):
     )
 
     return {"url": portal_session.url}
+
+
+# ─── Graph Endpoints ───────────────────────────────────────────────
+
+
+@app.get("/v1/graph/entities", response_model=list[EntityResponse])
+async def graph_entities(
+    agent_id: str,
+    type: str = None,
+    limit: int = 50,
+    user: dict = Depends(get_current_user),
+):
+    """List all entities for an agent, optionally filtered by type."""
+    from agentrecall_cloud.graph_db import get_entities, is_available
+
+    if not is_available():
+        return []
+
+    # Verify agent belongs to user
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        agent = await conn.fetchrow(
+            "SELECT id FROM agents WHERE id = $1 AND user_id = $2",
+            agent_id,
+            user["user_id"],
+        )
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+    entities = await get_entities(agent_id=agent_id, entity_type=type, limit=limit)
+    return [
+        EntityResponse(
+            name=e["name"],
+            type=e["type"],
+            memory_count=e.get("memory_count", 0),
+            first_seen=e.get("first_seen"),
+            last_seen=e.get("last_seen"),
+        )
+        for e in entities
+    ]
+
+
+@app.get("/v1/graph/entities/{entity_name}/neighbors", response_model=EntityNeighborsResponse)
+async def graph_entity_neighbors(
+    entity_name: str,
+    agent_id: str,
+    depth: int = 1,
+    user: dict = Depends(get_current_user),
+):
+    """Find entities connected to a given entity (BFS up to depth)."""
+    from agentrecall_cloud.graph_db import get_entity_neighbors, is_available
+
+    if not is_available():
+        return EntityNeighborsResponse(entity=None, neighbors=[])
+
+    # Verify agent belongs to user
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        agent = await conn.fetchrow(
+            "SELECT id FROM agents WHERE id = $1 AND user_id = $2",
+            agent_id,
+            user["user_id"],
+        )
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+    from agentrecall_cloud.models import EntityNeighbor
+    result = await get_entity_neighbors(
+        agent_id=agent_id, entity_name=entity_name, depth=depth
+    )
+
+    entity = None
+    if result.get("entity"):
+        e = result["entity"]
+        entity = EntityResponse(
+            name=e["name"],
+            type=e["type"],
+            memory_count=e.get("memory_count", 0),
+            first_seen=e.get("first_seen"),
+            last_seen=e.get("last_seen"),
+        )
+
+    neighbors = [
+        EntityNeighbor(
+            name=n["name"],
+            type=n["type"],
+            relationship_type=n["relationship_type"],
+            strength=n.get("strength", 1.0),
+            distance=n.get("distance", 1),
+        )
+        for n in result.get("neighbors", [])
+    ]
+
+    return EntityNeighborsResponse(entity=entity, neighbors=neighbors)
+
+
+@app.get("/v1/graph/relationships", response_model=list[RelationshipResponse])
+async def graph_relationships(
+    agent_id: str,
+    source: str = None,
+    target: str = None,
+    limit: int = 50,
+    user: dict = Depends(get_current_user),
+):
+    """List relationships, optionally filtered by source/target."""
+    from agentrecall_cloud.graph_db import get_relationships, is_available
+
+    if not is_available():
+        return []
+
+    # Verify agent belongs to user
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        agent = await conn.fetchrow(
+            "SELECT id FROM agents WHERE id = $1 AND user_id = $2",
+            agent_id,
+            user["user_id"],
+        )
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+    rels = await get_relationships(
+        agent_id=agent_id, source=source, target=target, limit=limit
+    )
+    return [
+        RelationshipResponse(
+            source=r["source"],
+            target=r["target"],
+            relation_type=r["relation_type"],
+            memory_ids=r.get("memory_ids", []),
+            strength=r.get("strength", 1.0),
+        )
+        for r in rels
+    ]
+
+
+@app.get("/v1/graph/paths", response_model=GraphPathResponse)
+async def graph_paths(
+    agent_id: str,
+    from_name: str = Query(..., alias="from"),
+    to_name: str = Query(..., alias="to"),
+    max_depth: int = 5,
+    user: dict = Depends(get_current_user),
+):
+    """Find shortest path between two entities."""
+    from agentrecall_cloud.graph_db import find_shortest_path, is_available
+
+    if not is_available():
+        return GraphPathResponse(path=[], length=0)
+
+    # Verify agent belongs to user
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        agent = await conn.fetchrow(
+            "SELECT id FROM agents WHERE id = $1 AND user_id = $2",
+            agent_id,
+            user["user_id"],
+        )
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+    result = await find_shortest_path(
+        agent_id=agent_id,
+        from_entity=from_name,
+        to_entity=to_name,
+        max_depth=max_depth,
+    )
+
+    from agentrecall_cloud.models import GraphPathItem
+    path_items = [
+        GraphPathItem(entity=item.get("entity"), relationship=item.get("relationship"))
+        for item in result.get("path", [])
+    ]
+
+    return GraphPathResponse(path=path_items, length=result.get("length", 0))
+
+
+@app.get("/v1/graph/stats", response_model=GraphStatsResponse)
+async def graph_stats(
+    agent_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Get graph statistics for an agent."""
+    from agentrecall_cloud.graph_db import get_graph_stats, is_available
+
+    if not is_available():
+        return GraphStatsResponse()
+
+    # Verify agent belongs to user
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        agent = await conn.fetchrow(
+            "SELECT id FROM agents WHERE id = $1 AND user_id = $2",
+            agent_id,
+            user["user_id"],
+        )
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+    stats = await get_graph_stats(agent_id=agent_id)
+    return GraphStatsResponse(
+        total_entities=stats.get("total_entities", 0),
+        total_relationships=stats.get("total_relationships", 0),
+        total_memories_in_graph=stats.get("total_memories_in_graph", 0),
+        entity_types=stats.get("entity_types", {}),
+        top_entities=stats.get("top_entities", []),
+    )
+
+
+@app.get("/v1/graph/context", response_model=GraphContextResponse)
+async def graph_context(
+    agent_id: str,
+    query: str = Query(...),
+    limit: int = 10,
+    user: dict = Depends(get_current_user),
+):
+    """Smart context retrieval: find relevant entities and connected memories."""
+    from agentrecall_cloud.graph_db import get_graph_context, is_available
+
+    if not is_available():
+        return GraphContextResponse(results=[])
+
+    # Verify agent belongs to user
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        agent = await conn.fetchrow(
+            "SELECT id FROM agents WHERE id = $1 AND user_id = $2",
+            agent_id,
+            user["user_id"],
+        )
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+    results = await get_graph_context(
+        agent_id=agent_id, query=query, limit=limit
+    )
+
+    from agentrecall_cloud.models import GraphContextItem
+    items = [
+        GraphContextItem(
+            entity=r.get("entity"),
+            memories=r.get("memories", []),
+            connected_entities=r.get("connected_entities", []),
+        )
+        for r in results
+    ]
+
+    return GraphContextResponse(results=items)
 
 
 # ─── Main ────────────────────────────────────────────────────────────

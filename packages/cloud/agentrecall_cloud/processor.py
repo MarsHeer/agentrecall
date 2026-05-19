@@ -120,6 +120,8 @@ async def process_memories_batch(memories: list[dict]) -> list[dict]:
 
 async def enrich_memory(memory_id: int, content: str, agent_id: str) -> None:
     """Enrich a memory in the database with AI processing results."""
+    from agentrecall_cloud.graph_db import sync_memory_to_graph
+
     result = await process_memory(memory_id, content, agent_id)
 
     from agentrecall_cloud.database import get_pool
@@ -165,14 +167,28 @@ async def enrich_memory(memory_id: int, content: str, agent_id: str) -> None:
 
             logger.info("Enriched memory %d: category=%s, importance=%s, entities=%d",
                        memory_id, result.get("category"), result.get("importance"), len(entities))
+
+            # Sync to Neo4j graph
+            await sync_memory_to_graph(
+                memory_id=memory_id,
+                content=content,
+                agent_id=agent_id,
+                entities=entities,
+                relationships=rels,
+                summary=result.get("summary", ""),
+            )
     except Exception as e:
         logger.error("Failed to enrich memory %d: %s", memory_id, e)
 
-
 def _regex_fallback(content: str) -> dict:
-    """Fast regex classification when API is unavailable."""
+    """Fast regex classification when API is unavailable.
+
+    Also does basic entity extraction (capitalized words, common patterns).
+    """
+    import re as _re
     category = classify(content)
 
+    # Simple importance heuristic
     content_lower = content.lower()
     if any(w in content_lower for w in ["actually", "wrong", "correction", "don't", "never use"]):
         importance = "high"
@@ -183,11 +199,48 @@ def _regex_fallback(content: str) -> dict:
     else:
         importance = "medium"
 
+    # Basic entity extraction: capitalized words that look like names/places
+    entities = []
+    # Match capitalized words (potential names/places/concepts)
+    caps = _re.findall(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b', content)
+    seen = set()
+    for name in caps:
+        name_clean = name.strip()
+        if name_clean.lower() not in seen and len(name_clean) > 2:
+            seen.add(name_clean.lower())
+            # Guess type based on common patterns
+            if any(w in name_clean.lower() for w in ["street", "road", "ave", "blvd", "st"]):
+                etype = "location"
+            elif any(w in name_clean.lower() for w in ["inc", "llc", "corp", "ltd", "co"]):
+                etype = "organization"
+            else:
+                etype = "concept"
+            entities.append({"name": name_clean, "type": etype})
+
+    # Extract relationships: "X lives in Y", "X works on Y", "X has Y"
+    relationships = []
+    for pattern, rel_type in [
+        (r'lives in\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)', 'lives_in'),
+        (r'works? on\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)', 'works_on'),
+        (r'works? at\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)', 'works_at'),
+        (r'has a\s+([A-Z][a-z]+)', 'has'),
+        (r'is a\s+([A-Z][a-z]+)', 'is_a'),
+    ]:
+        matches = _re.findall(pattern, content)
+        for match in matches:
+            # Find the subject (first capitalized entity)
+            if entities:
+                relationships.append({
+                    "source": entities[0]["name"],
+                    "target": match.strip(),
+                    "type": rel_type,
+                })
+
     return {
         "category": category,
         "importance": importance,
-        "entities": [],
-        "relationships": [],
+        "entities": entities,
+        "relationships": relationships,
         "summary": content[:100],
         "keywords": [],
         "ai_processed": False,

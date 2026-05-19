@@ -55,6 +55,16 @@ class Config:
     deepseek_api_key: str = field(
         default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", "")
     )
+    # Neo4j Graph Database
+    neo4j_uri: str = field(
+        default_factory=lambda: os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    )
+    neo4j_user: str = field(
+        default_factory=lambda: os.getenv("NEO4J_USER", "neo4j")
+    )
+    neo4j_password: str = field(
+        default_factory=lambda: os.getenv("NEO4J_PASSWORD", "")
+    )
     # Free tier limits
     free_tier_memories: int = 10000
     free_tier_api_calls_daily: int = 1000

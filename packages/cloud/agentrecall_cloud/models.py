@@ -117,3 +117,63 @@ class CountResponse(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
+
+
+# --- Graph ---
+
+
+class EntityResponse(BaseModel):
+    name: str
+    type: str
+    memory_count: int = 0
+    first_seen: Optional[str] = None
+    last_seen: Optional[str] = None
+
+
+class EntityNeighbor(BaseModel):
+    name: str
+    type: str
+    relationship_type: str
+    strength: float = 1.0
+    distance: int = 1
+
+
+class EntityNeighborsResponse(BaseModel):
+    entity: Optional[EntityResponse] = None
+    neighbors: list[EntityNeighbor] = Field(default_factory=list)
+
+
+class RelationshipResponse(BaseModel):
+    source: str
+    target: str
+    relation_type: str
+    memory_ids: list = Field(default_factory=list)
+    strength: float = 1.0
+
+
+class GraphStatsResponse(BaseModel):
+    total_entities: int = 0
+    total_relationships: int = 0
+    total_memories_in_graph: int = 0
+    entity_types: dict = Field(default_factory=dict)
+    top_entities: list = Field(default_factory=list)
+
+
+class GraphPathItem(BaseModel):
+    entity: Optional[dict] = None
+    relationship: Optional[dict] = None
+
+
+class GraphPathResponse(BaseModel):
+    path: list[GraphPathItem] = Field(default_factory=list)
+    length: int = 0
+
+
+class GraphContextItem(BaseModel):
+    entity: Optional[dict] = None
+    memories: list = Field(default_factory=list)
+    connected_entities: list = Field(default_factory=list)
+
+
+class GraphContextResponse(BaseModel):
+    results: list[GraphContextItem] = Field(default_factory=list)
