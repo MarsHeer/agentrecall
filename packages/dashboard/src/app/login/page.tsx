@@ -156,31 +156,64 @@ export default function LoginPage() {
           </form>
         )}
 
-        {/* Agent API Key Login */}
+        {/* Agent API Key Login + Signup Instructions */}
         {authTab === "agent" && (
-          <form onSubmit={handleApiKey} className="space-y-3">
-            <p className="text-xs text-[var(--color-text-muted)] text-center">
-              Paste your API key (ark_...) to authenticate
-            </p>
-            <input
-              type="password"
-              placeholder="ark_..."
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              required
-              className="w-full font-mono text-sm"
-            />
-            {error && (
-              <p className="text-[var(--color-danger)] text-xs">{error}</p>
-            )}
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full py-2.5 rounded-lg bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white text-sm font-medium transition-colors disabled:opacity-50"
-            >
-              {loading ? "..." : "Authenticate with API Key"}
-            </button>
-          </form>
+          <div className="space-y-4">
+            {/* Quick login */}
+            <form onSubmit={handleApiKey} className="space-y-3">
+              <p className="text-xs text-[var(--color-text-muted)] text-center">
+                Already have an API key? Paste it to authenticate
+              </p>
+              <input
+                type="password"
+                placeholder="ark_..."
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                required
+                className="w-full font-mono text-sm"
+              />
+              {error && (
+                <p className="text-[var(--color-danger)] text-xs">{error}</p>
+              )}
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-2.5 rounded-lg bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)] text-white text-sm font-medium transition-colors disabled:opacity-50"
+              >
+                {loading ? "..." : "Authenticate with API Key"}
+              </button>
+            </form>
+
+            {/* Signup instructions */}
+            <div className="border-t border-[var(--color-border)] pt-4">
+              <p className="text-xs text-[var(--color-text-muted)] text-center mb-3">
+                New agent? Register via the API:
+              </p>
+              <div className="bg-[var(--color-bg)] rounded-lg p-3 font-mono text-xs space-y-2 overflow-x-auto">
+                <div>
+                  <span className="text-[var(--color-accent)]">1.</span>
+                  <span className="text-[var(--color-text-muted)] ml-1">Create account</span>
+                  <pre className="text-[var(--color-text)] mt-1 whitespace-pre-wrap break-all">{`curl -X POST ${process.env.NEXT_PUBLIC_API_URL || "https://api.agentrecall.cloud"}/v1/auth/signup \\
+  -H "Content-Type: application/json" \\
+  -d '{"email":"you@example.com","password":"yourpassword"}'`}</pre>
+                </div>
+                <div>
+                  <span className="text-[var(--color-accent)]">2.</span>
+                  <span className="text-[var(--color-text-muted)] ml-1">Get API key (use the token from step 1)</span>
+                  <pre className="text-[var(--color-text)] mt-1 whitespace-pre-wrap break-all">{`curl -X POST ${process.env.NEXT_PUBLIC_API_URL || "https://api.agentrecall.cloud"}/v1/api-keys \\
+  -H "Authorization: Bearer <TOKEN>" \\
+  -H "Content-Type: application/json" \\
+  -d '{"name":"my-agent"}'`}</pre>
+                </div>
+                <div>
+                  <span className="text-[var(--color-accent)]">3.</span>
+                  <span className="text-[var(--color-text-muted)] ml-1">Use the API key in your SDK</span>
+                  <pre className="text-[var(--color-text)] mt-1 whitespace-pre-wrap break-all">{`from agentrecall import MemoryStore
+store = MemoryStore(mode="cloud", api_key="ark_...")`}</pre>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>
