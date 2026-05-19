@@ -1,11 +1,12 @@
-"""AI Memory Processor — calls RunPod serverless endpoint (Qwen2.5-7B).
+"""AI Memory Processor — calls DeepSeek V4 Flash API.
 
-Falls back to regex classification when RunPod is not configured.
+Falls back to regex classification when API key is not configured.
+DeepSeek V4 Flash is fast, cheap (~$0.27/M tokens), and produces excellent
+structured output for memory processing.
 """
 
 import json
 import logging
-import asyncio
 from typing import Optional
 
 import httpx
@@ -15,8 +16,10 @@ from agentrecall_cloud.scoring import classify
 
 logger = logging.getLogger(__name__)
 
-# Singleton HTTP client for connection pooling
 _client: Optional[httpx.AsyncClient] = None
+
+DEEPSEEK_API_URL = "https://api.deepseek.com/chat/completions"
+MODEL = "deepseek-chat"
 
 
 async def _get_client() -> httpx.AsyncClient:
@@ -33,113 +36,90 @@ async def close_client():
         _client = None
 
 
-async def process_memory(memory_id: int, content: str, agent_id: str) -> dict:
-    """Process a single memory through AI (RunPod) or regex fallback.
+SYSTEM_PROMPT = """You are an AI memory processor. Given a memory text, extract structured info and return ONLY valid JSON.
 
-    Returns dict with: category, importance, entities, relationships, summary, keywords.
-    Always returns valid data — falls back to regex on any error.
-    """
-    if not config.runpod_api_key or not config.runpod_endpoint_id:
-        logger.debug("RunPod not configured, using regex fallback for memory %d", memory_id)
+Return exactly this JSON (no markdown, no explanation):
+{"category": "<correction|preference|temporal|factual|general>", "importance": "<high|medium|low>", "entities": [{"name": "...", "type": "person|place|tool|concept|date"}], "relationships": [{"source": "...", "target": "...", "type": "..."}], "summary": "<one sentence, max 100 chars>", "keywords": ["kw1", "kw2"]}
+
+Rules:
+- "prefer/like/hate/always/never use" = preference. "actually/wrong/correction" = correction. "yesterday/tomorrow/deadline" = temporal. "is/are/was/has/lives" = factual. Else = general.
+- importance: "high" if correction, strong preference, or deadline. Else "medium".
+- entities: People, places, tools, concepts, dates. Type = person/place/tool/concept/date.
+- relationships: How entities relate.
+- summary: One sentence, max 100 chars.
+- keywords: 2-5 searchable words."""
+
+
+async def _call_deepseek(content: str) -> dict:
+    """Call DeepSeek API for memory processing."""
+    client = await _get_client()
+
+    response = await client.post(
+        DEEPSEEK_API_URL,
+        headers={
+            "Authorization": f"Bearer {config.deepseek_api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": MODEL,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f'Process this memory:\n\n"{content}"\n\nReturn ONLY the JSON.'},
+            ],
+            "temperature": 0.3,
+            "max_tokens": 512,
+            "response_format": {"type": "json_object"},
+        },
+    )
+
+    if response.status_code != 200:
+        raise RuntimeError(f"DeepSeek API returned {response.status_code}: {response.text[:200]}")
+
+    data = response.json()
+    text = data["choices"][0]["message"]["content"].strip()
+
+    # Strip markdown fences if present
+    if text.startswith("```"):
+        lines = text.split("\n")
+        text = "\n".join(lines[1:-1])
+
+    return json.loads(text)
+
+
+async def process_memory(memory_id: int, content: str, agent_id: str) -> dict:
+    """Process a single memory through DeepSeek or regex fallback."""
+    if not config.deepseek_api_key:
+        logger.debug("DeepSeek not configured, using regex fallback for memory %d", memory_id)
         return _regex_fallback(content)
 
     try:
-        client = await _get_client()
-        url = f"https://api.runpod.ai/v2/{config.runpod_endpoint_id}/runsync"
-
-        response = await client.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {config.runpod_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "input": {
-                    "content": content,
-                    "memory_id": memory_id,
-                }
-            },
-        )
-
-        if response.status_code != 200:
-            logger.warning("RunPod returned %d for memory %d, falling back to regex",
-                          response.status_code, memory_id)
-            return _regex_fallback(content)
-
-        data = response.json()
-
-        # RunPod runsync returns {"output": {...}}
-        output = data.get("output", data)
-
-        if "error" in output:
-            logger.warning("RunPod error for memory %d: %s", memory_id, output["error"])
-            return _regex_fallback(content)
-
-        # Validate and clean the output
-        return _validate_output(output, content)
-
+        result = await _call_deepseek(content)
+        return _validate_output(result, content)
     except httpx.TimeoutException:
-        logger.warning("RunPod timeout for memory %d, falling back to regex", memory_id)
+        logger.warning("DeepSeek timeout for memory %d", memory_id)
         return _regex_fallback(content)
     except Exception as e:
-        logger.error("RunPod processing failed for memory %d: %s", memory_id, e)
+        logger.error("DeepSeek processing failed for memory %d: %s", memory_id, e)
         return _regex_fallback(content)
 
 
 async def process_memories_batch(memories: list[dict]) -> list[dict]:
-    """Process multiple memories in one RunPod call (batch).
-
-    Each dict: {"id": int, "content": str}
-    Returns list of results.
-    """
-    if not config.runpod_api_key or not config.runpod_endpoint_id:
+    """Process multiple memories (sequential via API)."""
+    if not config.deepseek_api_key:
         return [_regex_fallback(m["content"]) for m in memories]
 
-    try:
-        client = await _get_client()
-        url = f"https://api.runpod.ai/v2/{config.runpod_endpoint_id}/runsync"
-
-        response = await client.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {config.runpod_api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "input": {
-                    "memories": [{"id": m["id"], "content": m["content"]} for m in memories]
-                }
-            },
-        )
-
-        if response.status_code != 200:
-            logger.warning("RunPod batch returned %d, falling back to regex", response.status_code)
-            return [_regex_fallback(m["content"]) for m in memories]
-
-        data = response.json()
-        output = data.get("output", data)
-
-        if "error" in output:
-            return [_regex_fallback(m["content"]) for m in memories]
-
-        results = output.get("results", [])
-        # Pad if RunPod returned fewer results than we sent
-        while len(results) < len(memories):
-            idx = len(results)
-            results.append(_regex_fallback(memories[idx]["content"]))
-
-        return [_validate_output(r, memories[i]["content"]) for i, r in enumerate(results)]
-
-    except Exception as e:
-        logger.error("RunPod batch processing failed: %s", e)
-        return [_regex_fallback(m["content"]) for m in memories]
+    results = []
+    for m in memories:
+        try:
+            result = await _call_deepseek(m["content"])
+            results.append(_validate_output(result, m["content"]))
+        except Exception:
+            results.append(_regex_fallback(m["content"]))
+    return results
 
 
 async def enrich_memory(memory_id: int, content: str, agent_id: str) -> None:
-    """Enrich a memory in the database with AI processing results.
-
-    This is called async after the memory is stored. Updates the DB directly.
-    """
+    """Enrich a memory in the database with AI processing results."""
     result = await process_memory(memory_id, content, agent_id)
 
     from agentrecall_cloud.database import get_pool
@@ -147,35 +127,52 @@ async def enrich_memory(memory_id: int, content: str, agent_id: str) -> None:
     try:
         pool = await get_pool()
         async with pool.acquire() as conn:
-            # Update category and importance if AI gave better classification
             await conn.execute(
                 """
                 UPDATE memories
-                SET category = $1, importance = $2, metadata = $3, updated_at = now()
-                WHERE id = $4
+                SET category = $1, importance = $2, metadata = $3,
+                    ai_processed = true, summary = $4, keywords = $5,
+                    updated_at = now()
+                WHERE id = $6
                 """,
                 result.get("category", "general"),
                 result.get("importance", "medium"),
                 json.dumps({
-                    "ai_processed": True,
                     "entities": result.get("entities", []),
                     "relationships": result.get("relationships", []),
-                    "summary": result.get("summary", ""),
-                    "keywords": result.get("keywords", []),
                 }),
+                result.get("summary", ""),
+                result.get("keywords", []),
                 memory_id,
             )
-            logger.info("Enriched memory %d: category=%s, importance=%s",
-                       memory_id, result.get("category"), result.get("importance"))
+            # Store entities in separate table
+            entities = result.get("entities", [])
+            for ent in entities:
+                if isinstance(ent, dict) and ent.get("name"):
+                    await conn.execute(
+                        "INSERT INTO entities (memory_id, name, type) VALUES ($1, $2, $3)",
+                        memory_id, ent["name"], ent.get("type", "concept"),
+                    )
+
+            # Store relationships
+            rels = result.get("relationships", [])
+            for rel in rels:
+                if isinstance(rel, dict) and rel.get("source") and rel.get("target"):
+                    await conn.execute(
+                        "INSERT INTO relationships (memory_id, source, target, relation_type) VALUES ($1, $2, $3, $4)",
+                        memory_id, rel["source"], rel["target"], rel.get("type", "related_to"),
+                    )
+
+            logger.info("Enriched memory %d: category=%s, importance=%s, entities=%d",
+                       memory_id, result.get("category"), result.get("importance"), len(entities))
     except Exception as e:
         logger.error("Failed to enrich memory %d: %s", memory_id, e)
 
 
 def _regex_fallback(content: str) -> dict:
-    """Fast regex classification when RunPod is unavailable."""
+    """Fast regex classification when API is unavailable."""
     category = classify(content)
 
-    # Simple importance heuristic
     content_lower = content.lower()
     if any(w in content_lower for w in ["actually", "wrong", "correction", "don't", "never use"]):
         importance = "high"
