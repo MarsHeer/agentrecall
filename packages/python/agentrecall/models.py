@@ -19,7 +19,6 @@ class Memory(BaseModel):
     embedding: Optional[list[float]] = None
 
 
-class RecallResult(BaseModel):
-    """Extends Memory with a composite relevance score."""
-    memory: Memory
-    score: float
+class RecallResult(Memory):
+    """Memory with a composite relevance score. Flattened — access result.content directly."""
+    score: float = 0.0

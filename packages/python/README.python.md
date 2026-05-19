@@ -29,7 +29,7 @@ store.save("agent", "Don't pretend to be me")
 
 # Recall relevant memories
 results = store.recall("agent", "where does the user live?")
-print(results[0].memory.content)  # "User lives in Marbella, Spain"
+print(results[0].content)  # "User lives in Marbella, Spain"
 print(results[0].score)  # 0.85
 ```
 

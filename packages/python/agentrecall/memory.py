@@ -193,7 +193,21 @@ class MemoryStore:
             )
 
             if score >= min_score:
-                results.append(RecallResult(memory=memory, score=score))
+                results.append(RecallResult(
+                    id=memory.id,
+                    content=memory.content,
+                    category=memory.category,
+                    agent=memory.agent,
+                    importance=memory.importance,
+                    confidence=memory.confidence,
+                    skipped=memory.skipped,
+                    access_count=memory.access_count,
+                    created_at=memory.created_at,
+                    updated_at=memory.updated_at,
+                    metadata=memory.metadata,
+                    embedding=memory.embedding,
+                    score=score,
+                ))
 
         # Sort by score descending
         results.sort(key=lambda r: r.score, reverse=True)

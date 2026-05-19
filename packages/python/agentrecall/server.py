@@ -61,9 +61,9 @@ def recall_memories(agent_id: str, q: str, limit: int = 5):
     results = store.recall(q, agent=agent_id, limit=limit)
     return [
         RecallResultResponse(
-            id=r.memory.id, content=r.memory.content,
-            score=round(r.score, 4), category=r.memory.category,
-            importance=r.memory.importance,
+            id=r.id, content=r.content,
+            score=round(r.score, 4), category=r.category,
+            importance=r.importance,
         )
         for r in results
     ]

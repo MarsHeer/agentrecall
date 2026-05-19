@@ -11,7 +11,7 @@ def test_remember_and_recall(store):
     store.remember("User lives in Marbella, Spain", agent="test_agent")
     results = store.recall("where does the user live?", agent="test_agent")
     assert len(results) >= 1
-    assert "Marbella" in results[0].memory.content
+    assert "Marbella" in results[0].content
 
 
 def test_skip_deprioritizes(store):
@@ -31,7 +31,7 @@ def test_correction_high_importance(store):
     store.remember("Don't pretend to be the user", agent="test_agent")
     results = store.recall("how should the agent behave?", agent="test_agent")
     assert len(results) >= 1
-    assert results[0].memory.importance == "high"
+    assert results[0].importance == "high"
 
 
 def test_preference_category(store):
@@ -41,7 +41,7 @@ def test_preference_category(store):
         agent="test_agent",
     )
     assert len(results) >= 1
-    assert results[0].memory.category == "preference"
+    assert results[0].category == "preference"
 
 
 def test_remember_returns_memory(store):
@@ -128,6 +128,6 @@ def test_category_filter(store):
     results_fact = store.recall("where does user live", agent="test_agent", category="factual")
     # Each category filter should return relevant results
     if results_pref:
-        assert results_pref[0].memory.category == "preference"
+        assert results_pref[0].category == "preference"
     if results_fact:
-        assert results_fact[0].memory.category == "factual"
+        assert results_fact[0].category == "factual"

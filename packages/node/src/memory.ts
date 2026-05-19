@@ -142,14 +142,6 @@ export class MemoryStore {
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
 
-    // Increment access_count for returned results
-    for (const r of results) {
-      const mem = this.storage.get(r.id);
-      if (mem) {
-        this.storage.update(r.id, { access_count: mem.access_count + 1 });
-      }
-    }
-
     return results;
   }
 
@@ -267,10 +259,8 @@ export class MemoryStore {
     if (queryEmbedding && memory.embedding) {
       similarity = cosineSimilarity(queryEmbedding, memory.embedding);
       if (isNaN(similarity)) similarity = 0;
-    } else if (queryEmbedding && !memory.embedding) {
-      // Have query embedding but no memory embedding — can't compute similarity
-      similarity = 0;
     }
+    // If queryEmbedding but no memory.embedding, similarity stays at 1.0 (lenient fallback)
 
     // Confidence
     const confidence = memory.confidence;

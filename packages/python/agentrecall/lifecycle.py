@@ -21,25 +21,23 @@ class MemoryLifecycle:
         self.storage.conn.commit()
         return cursor.rowcount
 
-    def decay_confidence(self, memory: Memory, days: int) -> float:
-        """Calculate decayed confidence using multiplicative formula.
+    def decay_confidence(self, memory: Memory) -> float:
+        """Calculate decayed confidence — 1 step per call.
 
-        new_confidence = confidence × (1 - decay_rate)^days
+        new_confidence = confidence × (1 - decay_rate)
         """
-        return max(0.0, memory.confidence * ((1 - self.decay_rate) ** days))
+        return max(0.0, memory.confidence * (1 - self.decay_rate))
 
     def run_decay(self, agent: str) -> int:
         """Apply decay to all memories and remove those below threshold.
 
         Returns count of memories removed.
         """
-        now = datetime.now(timezone.utc)
         memories = self.storage.list_all(agent)
         removed = 0
 
         for m in memories:
-            days_old = max(0, (now - m.updated_at).days)
-            new_conf = self.decay_confidence(m, days_old)
+            new_conf = self.decay_confidence(m)
 
             if new_conf < self.min_confidence:
                 self.storage.delete(m.id)
