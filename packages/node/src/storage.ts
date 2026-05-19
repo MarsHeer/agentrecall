@@ -263,6 +263,11 @@ export class Storage {
       updated_at: row.updated_at as string,
       metadata: JSON.parse((row.metadata as string) || "{}"),
       embedding,
+      ai_processed: false,
+      summary: "",
+      keywords: [],
+      entities: [],
+      relationships: [],
     };
   }
 }

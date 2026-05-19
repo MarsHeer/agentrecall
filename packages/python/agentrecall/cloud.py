@@ -63,6 +63,11 @@ class CloudClient:
             updated_at=data.get("updated_at"),
             metadata=data.get("metadata") or {},
             embedding=data.get("embedding"),
+            ai_processed=data.get("ai_processed", False),
+            summary=data.get("summary", ""),
+            keywords=data.get("keywords", []),
+            entities=data.get("entities", []),
+            relationships=data.get("relationships", []),
         )
 
     def _to_recall(self, data: dict) -> RecallResult:
@@ -80,6 +85,11 @@ class CloudClient:
             updated_at=data.get("updated_at"),
             metadata=data.get("metadata") or {},
             embedding=data.get("embedding"),
+            ai_processed=data.get("ai_processed", False),
+            summary=data.get("summary", ""),
+            keywords=data.get("keywords", []),
+            entities=data.get("entities", []),
+            relationships=data.get("relationships", []),
             score=data.get("score", 0.0),
         )
 

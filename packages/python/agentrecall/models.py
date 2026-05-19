@@ -17,6 +17,11 @@ class Memory(BaseModel):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict = Field(default_factory=dict)
     embedding: Optional[list[float]] = None
+    ai_processed: bool = False
+    summary: str = ""
+    keywords: list[str] = Field(default_factory=list)
+    entities: list[dict] = Field(default_factory=list)
+    relationships: list[dict] = Field(default_factory=list)
 
 
 class RecallResult(Memory):

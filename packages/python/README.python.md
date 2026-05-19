@@ -1,125 +1,88 @@
-# AgentMemory
+# AgentRecall SDK
 
-Plug-and-play memory for AI agents. Classify, store, compress, and retrieve memories with automatic relevance scoring.
+Plug-and-play persistent memory for AI agents.
 
-## Features
+## Install
 
-- **Smart Classification** — Automatically categorizes memories (user facts, preferences, corrections, temporal)
-- **Semantic Search** — Hybrid RAG retrieval with sentence-transformers embeddings
-- **Auto-Compression** — Groups related memories and creates summaries
-- **Memory Lifecycle** — TTL expiration and confidence decay for outdated memories
-- **Zero Config** — Works out of the box with SQLite + local embeddings
-- **REST API** — FastAPI server for any language/framework
-- **Python SDK** — `pip install agentrecall` and go
+```bash
+pip install agentrecall-sdk
+```
 
 ## Quick Start
-
-### As a Python Library
 
 ```python
 from agentrecall import MemoryStore
 
-# Create a store (SQLite + local embeddings)
-store = MemoryStore("my_agent.db")
+store = MemoryStore()
 
-# Save memories (auto-classified)
-store.save("agent", "User lives in Marbella, Spain")
-store.save("agent", "I prefer concise responses")
-store.save("agent", "Don't pretend to be me")
+# Store memories
+store.remember("User prefers dark mode", agent="assistant")
+store.remember("User lives in Marbella, Spain", agent="assistant")
 
 # Recall relevant memories
-results = store.recall("agent", "where does the user live?")
-print(results[0].content)  # "User lives in Marbella, Spain"
-print(results[0].score)  # 0.85
+memories = store.recall("What theme should I use?", agent="assistant")
+for m in memories:
+    print(f"[{m.score:.2f}] {m.content}")
 ```
 
-### As a REST API
+## Cloud Mode
 
-```bash
-pip install agentrecall
-agentrecall
-# Server starts on http://localhost:8700
-```
-
-```bash
-# Save a memory
-curl -X POST http://localhost:8700/v1/memories \
-  -H "Content-Type: application/json" \
-  -d '{"agent_id": "agent", "content": "User lives in Marbella"}'
-
-# Recall memories
-curl "http://localhost:8700/v1/memories/agent/recall?q=where+does+user+live"
-```
-
-### With the Python Client
+Connect to AgentRecall Cloud API for managed hosting:
 
 ```python
-from agentrecall.client import AgentMemoryClient
-
-with AgentMemoryClient(agent_id="agent") as client:
-    client.save("User has a dog named Poppy")
-    results = client.recall("what pet does the user have?")
-    print(results[0].content)  # "User has a dog named Poppy"
-```
-
-## Memory Types
-
-| Type | Description | Auto-TTL | Priority |
-|------|-------------|----------|----------|
-| `user_fact` | Permanent facts about users | No | Medium |
-| `preference` | User preferences and habits | No | High |
-| `correction` | "Don't do X" corrections | No | High |
-| `temporary` | Time-bound info | 7 days | Medium |
-| `skip` | Task outputs, not stored | - | Low |
-
-## How It Works
-
-1. **Classify** — Every memory is automatically categorized using pattern matching (or optional LLM)
-2. **Embed** — Local sentence-transformers creates 384-dim vectors for semantic search
-3. **Store** — SQLite with embedding blobs, confidence scores, and TTL metadata
-4. **Recall** — Hybrid scoring: semantic similarity × confidence × priority × type penalty
-5. **Compress** — Old related memories are automatically grouped and summarized
-6. **Decay** — Confidence decreases over time; memories below threshold are auto-deleted
-
-## Architecture
-
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│   Agent      │────▶│  MemoryStore │────▶│   SQLite    │
-│   (user)     │     │  (classify,  │     │  (hot       │
-│              │     │   embed,     │     │   storage)  │
-│              │     │   score)     │     │             │
-└─────────────┘     └──────────────┘     └─────────────┘
-                           │
-                    ┌──────┴──────┐
-                    │ sentence-   │
-                    │ transformers│
-                    │ (local)     │
-                    └─────────────┘
-```
-
-## Configuration
-
-```python
-from agentrecall import MemoryStore, AgentMemoryConfig
+from agentrecall import CloudClient, AgentMemoryConfig
 
 config = AgentMemoryConfig(
-    db_path="custom.db",
-    embedding_model="all-MiniLM-L6-v2",  # or any sentence-transformers model
-    max_context_tokens=500,
-    decay_rate=0.01,          # confidence lost per day
-    min_confidence=0.1,       # auto-delete below this
+    cloud_url="https://api.agentrecall.cloud",
+    api_key="your-api-key"
 )
+client = CloudClient(config)
 
-store = MemoryStore(config=config)
+client.remember("User prefers dark mode", agent="assistant")
+memories = client.recall("What theme should I use?", agent="assistant")
 ```
 
-## Cost
+## Graph Memory (Cloud Pro)
 
-- **Embeddings**: Free (local, ~20ms per text on CPU)
-- **Storage**: SQLite (no external DB needed)
-- **Classification**: Rule-based by default, optional LLM (~$0.0001/classification)
-- **Total**: ~$0/month for typical agent usage
+```python
+client = CloudClient(config)
+
+# Store — entities auto-extracted to Neo4j graph
+client.remember("Alice works at Acme Corp in San Francisco", agent="assistant")
+
+# Query the graph
+stats = client.graph_stats("assistant")
+neighbors = client.graph_entity_neighbors("Alice", "assistant")
+context = client.graph_context("assistant", "Where does Alice work?")
+```
+
+## API Reference
+
+### MemoryStore (local)
+
+| Method | Description |
+|--------|-------------|
+| `remember(content, agent, category, importance, metadata)` | Store a memory |
+| `recall(query, agent, category, limit, min_score)` | Find relevant memories |
+| `get(id)` | Get memory by ID |
+| `update(id, content)` | Update memory content |
+| `delete(id)` | Delete a memory |
+| `skip(id)` / `unskip(id)` | Penalize/unpenalize a memory |
+| `count(agent)` | Count memories |
+| `wipe(agent, category)` | Delete memories |
+
+### CloudClient (cloud)
+
+Same methods as MemoryStore plus:
+
+| Method | Description |
+|--------|-------------|
+| `graph_entities(agent, type, limit)` | List graph entities |
+| `graph_entity_neighbors(name, agent, depth)` | Find connected entities |
+| `graph_relationships(agent, source, target, limit)` | List relationships |
+| `graph_paths(agent, from, to, max_depth)` | Find shortest path |
+| `graph_stats(agent)` | Graph statistics |
+| `graph_context(agent, query, limit)` | Smart context retrieval |
 
 ## License
 

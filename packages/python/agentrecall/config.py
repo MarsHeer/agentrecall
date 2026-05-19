@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 class AgentMemoryConfig:
     db_path: str = "agentrecall.db"
     mode: str = "auto"  # 'auto', 'local', or 'cloud'
-    cloud_url: str = "https://api.agentrecall.ai"
+    cloud_url: str = "https://api.agentrecall.cloud"
     api_key: str = ""
     embedding_model: str = "all-MiniLM-L6-v2"
     max_context_tokens: int = 500

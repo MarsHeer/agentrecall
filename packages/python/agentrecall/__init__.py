@@ -2,7 +2,7 @@ from agentrecall.models import Memory, RecallResult
 from agentrecall.config import AgentMemoryConfig
 from agentrecall.cloud import CloudClient
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = ["Memory", "RecallResult", "AgentMemoryConfig", "CloudClient"]
 
 

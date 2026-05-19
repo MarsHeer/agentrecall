@@ -11,6 +11,11 @@ export interface Memory {
   updated_at: string;
   metadata: Record<string, unknown>;
   embedding: number[] | null;
+  ai_processed: boolean;
+  summary: string;
+  keywords: string[];
+  entities: Record<string, unknown>[];
+  relationships: Record<string, unknown>[];
 }
 
 export interface RecallResult extends Memory {

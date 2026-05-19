@@ -1,17 +1,17 @@
-# agentrecall
+# agentrecall-ai-sdk
 
 Plug-and-play persistent memory for AI agents. TypeScript/Node.js SDK.
 
 ## Install
 
 ```bash
-npm install agentrecall
+npm install agentrecall-ai-sdk
 ```
 
 ## Quick Start
 
 ```typescript
-import { MemoryStore } from "agentrecall";
+import { MemoryStore } from "agentrecall-ai-sdk";
 
 const store = new MemoryStore();
 
@@ -37,11 +37,10 @@ const memories = await store.recall("What theme should I use?", {
 Pass an embedding function for semantic search:
 
 ```typescript
-import { MemoryStore } from "agentrecall";
+import { MemoryStore } from "agentrecall-ai-sdk";
 
 const store = new MemoryStore({
   embed: async (text) => {
-    // Use OpenAI, Cohere, or any embedding API
     const res = await fetch("https://api.openai.com/v1/embeddings", {
       method: "POST",
       headers: {
@@ -57,6 +56,33 @@ const store = new MemoryStore({
 ```
 
 Without embeddings, recall uses confidence + recency scoring.
+
+## Cloud Mode
+
+```typescript
+import { CloudClient } from "agentrecall-ai-sdk";
+
+const client = new CloudClient("https://api.agentrecall.cloud", "your-api-key");
+
+await client.remember("User prefers dark mode", { agent: "assistant" });
+const memories = await client.recall("What theme should I use?", { agent: "assistant" });
+```
+
+## Graph Memory (Cloud Pro)
+
+```typescript
+import { CloudClient } from "agentrecall-ai-sdk";
+
+const client = new CloudClient("https://api.agentrecall.cloud", "your-api-key");
+
+// Store — entities auto-extracted to Neo4j graph
+await client.remember("Alice works at Acme Corp in San Francisco", { agent: "assistant" });
+
+// Query the graph
+const stats = await client.graphStats("assistant");
+const neighbors = await client.graphEntityNeighbors("Alice", "assistant");
+const context = await client.graphContext("assistant", "Where does Alice work?");
+```
 
 ## API
 
@@ -98,6 +124,17 @@ Count memories, optionally filtered by agent.
 ### `store.wipe(options?)`
 
 Delete memories. Filter by `agent` and/or `category`.
+
+### CloudClient
+
+All `MemoryStore` methods plus:
+
+- `graphEntities(agent, options?)` — list graph entities
+- `graphEntityNeighbors(name, agent, options?)` — find connected entities
+- `graphRelationships(agent, options?)` — list relationships
+- `graphPaths(agent, from, to, options?)` — find shortest path
+- `graphStats(agent)` — graph statistics
+- `graphContext(agent, query, options?)` — smart context retrieval
 
 ## License
 
