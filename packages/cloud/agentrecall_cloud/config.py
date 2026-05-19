@@ -1,0 +1,73 @@
+import os
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Config:
+    """Cloud API configuration from environment variables."""
+
+    database_url: str = field(
+        default_factory=lambda: os.getenv(
+            "DATABASE_URL", "postgresql://localhost/agentrecall"
+        )
+    )
+    supabase_url: str = field(
+        default_factory=lambda: os.getenv("SUPABASE_URL", "")
+    )
+    supabase_anon_key: str = field(
+        default_factory=lambda: os.getenv("SUPABASE_ANON_KEY", "")
+    )
+    supabase_service_key: str = field(
+        default_factory=lambda: os.getenv("SUPABASE_SERVICE_KEY", "")
+    )
+    stripe_secret_key: str = field(
+        default_factory=lambda: os.getenv("STRIPE_SECRET_KEY", "")
+    )
+    stripe_webhook_secret: str = field(
+        default_factory=lambda: os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    )
+    stripe_price_id: str = field(
+        default_factory=lambda: os.getenv("STRIPE_PRICE_ID", "")
+    )
+    app_base_url: str = field(
+        default_factory=lambda: os.getenv(
+            "APP_BASE_URL",
+            "https://agentmemory-landing-swart.vercel.app",
+        )
+    )
+    jwt_secret: str = field(
+        default_factory=lambda: os.getenv("JWT_SECRET", "dev-secret-change-me")
+    )
+    cors_origins: list = field(
+        default_factory=lambda: os.getenv(
+            "CORS_ORIGINS",
+            "https://agentmemory-landing-swart.vercel.app,http://localhost:3000",
+        ).split(",")
+    )
+    # RunPod (AI processing)
+    runpod_api_key: str = field(
+        default_factory=lambda: os.getenv("RUNPOD_API_KEY", "")
+    )
+    runpod_endpoint_id: str = field(
+        default_factory=lambda: os.getenv("RUNPOD_ENDPOINT_ID", "")
+    )
+    # DeepSeek API (optional alternative to RunPod)
+    deepseek_api_key: str = field(
+        default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", "")
+    )
+    # Neo4j Graph Database
+    neo4j_uri: str = field(
+        default_factory=lambda: os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    )
+    neo4j_user: str = field(
+        default_factory=lambda: os.getenv("NEO4J_USER", "neo4j")
+    )
+    neo4j_password: str = field(
+        default_factory=lambda: os.getenv("NEO4J_PASSWORD", "")
+    )
+    # Free tier limits
+    free_tier_memories: int = 10000
+    free_tier_api_calls_daily: int = 1000
+
+
+config = Config()
