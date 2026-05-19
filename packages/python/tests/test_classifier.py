@@ -1,31 +1,48 @@
 from agentrecall.classifier import MemoryClassifier
-from agentrecall.models import MemoryType, MemoryPriority
 
-def test_classify_user_fact():
+
+def test_classify_factual():
     c = MemoryClassifier(use_llm=False)
     result = c.classify("User lives in Marbella")
-    assert result["memory_type"] == MemoryType.USER_FACT
-    assert result["priority"] == MemoryPriority.MEDIUM
+    assert result["category"] == "factual"
+    assert result["importance"] == "medium"
+
 
 def test_classify_correction():
     c = MemoryClassifier(use_llm=False)
     result = c.classify("Don't pretend to be me")
-    assert result["memory_type"] == MemoryType.CORRECTION
-    assert result["priority"] == MemoryPriority.HIGH
+    assert result["category"] == "correction"
+    assert result["importance"] == "high"
 
-def test_classify_skip():
+
+def test_classify_general():
     c = MemoryClassifier(use_llm=False)
     result = c.classify("wget downloaded 23MB successfully")
-    assert result["memory_type"] == MemoryType.SKIP
+    assert result["category"] == "general"
+
 
 def test_classify_preference():
     c = MemoryClassifier(use_llm=False)
     result = c.classify("I prefer concise responses")
-    assert result["memory_type"] == MemoryType.PREFERENCE
-    assert result["priority"] == MemoryPriority.HIGH
+    assert result["category"] == "preference"
+    assert result["importance"] == "high"
+
 
 def test_classify_temporal():
     c = MemoryClassifier(use_llm=False)
     result = c.classify("Doctor appointment tomorrow")
-    assert result["memory_type"] == MemoryType.TEMPORARY
-    assert result["ttl_seconds"] == 604800  # 7 days in seconds
+    assert result["category"] == "temporal"
+    assert result["importance"] == "medium"
+
+
+def test_classify_correction_never():
+    c = MemoryClassifier(use_llm=False)
+    result = c.classify("Never do that again")
+    assert result["category"] == "correction"
+
+
+def test_classify_preference_never_use():
+    """'never use' should be preference, not correction via 'never'."""
+    c = MemoryClassifier(use_llm=False)
+    result = c.classify("I never use tabs, always spaces")
+    assert result["category"] == "preference"

@@ -5,11 +5,12 @@ export interface Memory {
   agent: string;
   importance: string;
   confidence: number;
-  skip: boolean;
+  skipped: boolean;
   access_count: number;
   created_at: string;
   updated_at: string;
   metadata: Record<string, unknown>;
+  embedding: number[] | null;
 }
 
 export interface RecallResult extends Memory {
@@ -28,7 +29,6 @@ export interface RecallOptions {
   category?: string;
   limit?: number;
   min_score?: number;
-  skip_penalty?: number;
 }
 
 export type EmbeddingFunction = (text: string) => Promise<number[]>;

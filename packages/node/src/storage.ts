@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import path from "path";
 import os from "os";
+import fs from "fs";
 import type { Memory } from "./types.js";
 
 const DEFAULT_DB_PATH = path.join(
@@ -11,10 +12,11 @@ const DEFAULT_DB_PATH = path.join(
 
 export class Storage {
   private db: Database.Database;
+  private closed = false;
 
   constructor(dbPath?: string) {
     const dir = path.dirname(dbPath || DEFAULT_DB_PATH);
-    require("fs").mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true });
 
     this.db = new Database(dbPath || DEFAULT_DB_PATH);
     this.db.pragma("journal_mode = WAL");
@@ -31,17 +33,46 @@ export class Storage {
         agent TEXT NOT NULL DEFAULT 'default',
         importance TEXT NOT NULL DEFAULT 'medium',
         confidence REAL NOT NULL DEFAULT 1.0,
-        skip INTEGER NOT NULL DEFAULT 0,
+        skipped INTEGER NOT NULL DEFAULT 0,
         access_count INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-        metadata TEXT NOT NULL DEFAULT '{}'
+        metadata TEXT NOT NULL DEFAULT '{}',
+        embedding BLOB
       );
 
       CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent);
       CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
-      CREATE INDEX IF NOT EXISTS idx_memories_skip ON memories(skip);
+      CREATE INDEX IF NOT EXISTS idx_memories_skipped ON memories(skipped);
     `);
+
+    // Migration: add embedding column if missing (for existing DBs)
+    try {
+      this.db.prepare("SELECT embedding FROM memories LIMIT 1").get();
+    } catch {
+      this.db.exec("ALTER TABLE memories ADD COLUMN embedding BLOB");
+    }
+
+    // Migration: rename skip -> skipped if needed
+    try {
+      this.db.prepare("SELECT skipped FROM memories LIMIT 1").get();
+    } catch {
+      try {
+        this.db.exec("ALTER TABLE memories RENAME COLUMN skip TO skipped");
+        this.db.exec("DROP INDEX IF EXISTS idx_memories_skip");
+        this.db.exec(
+          "CREATE INDEX IF NOT EXISTS idx_memories_skipped ON memories(skipped)"
+        );
+      } catch {
+        // skip column doesn't exist at all, that's fine
+      }
+    }
+  }
+
+  checkClosed(): void {
+    if (this.closed) {
+      throw new Error("Store is closed");
+    }
   }
 
   insert(
@@ -49,23 +80,31 @@ export class Storage {
     category: string,
     agent: string,
     importance: string,
-    metadata: Record<string, unknown> = {}
+    metadata: Record<string, unknown> = {},
+    embedding?: number[] | null
   ): number {
+    this.checkClosed();
+    const embeddingBlob =
+      embedding != null
+        ? Buffer.from(JSON.stringify(embedding), "utf-8")
+        : null;
     const stmt = this.db.prepare(`
-      INSERT INTO memories (content, category, agent, importance, metadata)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO memories (content, category, agent, importance, metadata, embedding)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       content,
       category,
       agent,
       importance,
-      JSON.stringify(metadata)
+      JSON.stringify(metadata),
+      embeddingBlob
     );
     return Number(result.lastInsertRowid);
   }
 
   get(id: number): Memory | undefined {
+    this.checkClosed();
     const row = this.db
       .prepare("SELECT * FROM memories WHERE id = ?")
       .get(id) as Record<string, unknown> | undefined;
@@ -75,8 +114,11 @@ export class Storage {
 
   update(
     id: number,
-    updates: Partial<Pick<Memory, "content" | "confidence" | "skip" | "access_count">>
+    updates: Partial<
+      Pick<Memory, "content" | "confidence" | "skipped" | "access_count">
+    >
   ): void {
+    this.checkClosed();
     const sets: string[] = [];
     const values: unknown[] = [];
 
@@ -88,9 +130,9 @@ export class Storage {
       sets.push("confidence = ?");
       values.push(updates.confidence);
     }
-    if (updates.skip !== undefined) {
-      sets.push("skip = ?");
-      values.push(updates.skip ? 1 : 0);
+    if (updates.skipped !== undefined) {
+      sets.push("skipped = ?");
+      values.push(updates.skipped ? 1 : 0);
     }
     if (updates.access_count !== undefined) {
       sets.push("access_count = ?");
@@ -108,15 +150,26 @@ export class Storage {
   }
 
   delete(id: number): void {
+    this.checkClosed();
     this.db.prepare("DELETE FROM memories WHERE id = ?").run(id);
+  }
+
+  deleteMany(ids: number[]): void {
+    this.checkClosed();
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => "?").join(",");
+    this.db
+      .prepare(`DELETE FROM memories WHERE id IN (${placeholders})`)
+      .run(...ids);
   }
 
   search(
     agent: string,
     category?: string,
     limit: number = 10,
-    skip: boolean = true
+    excludeSkipped: boolean = false
   ): Memory[] {
+    this.checkClosed();
     let query = "SELECT * FROM memories WHERE agent = ?";
     const params: unknown[] = [agent];
 
@@ -124,19 +177,31 @@ export class Storage {
       query += " AND category = ?";
       params.push(category);
     }
-    if (skip) {
-      query += " AND skip = 0";
+    if (excludeSkipped) {
+      query += " AND skipped = 0";
     }
 
     query += " ORDER BY confidence DESC, access_count DESC, created_at DESC";
     query += " LIMIT ?";
     params.push(limit);
 
-    const rows = this.db.prepare(query).all(...params) as Record<string, unknown>[];
+    const rows = this.db
+      .prepare(query)
+      .all(...params) as Record<string, unknown>[];
+    return rows.map((r) => this.parseRow(r));
+  }
+
+  /** Get all memories (used for decay) */
+  getAll(): Memory[] {
+    this.checkClosed();
+    const rows = this.db
+      .prepare("SELECT * FROM memories")
+      .all() as Record<string, unknown>[];
     return rows.map((r) => this.parseRow(r));
   }
 
   count(agent?: string): number {
+    this.checkClosed();
     if (agent) {
       const row = this.db
         .prepare("SELECT COUNT(*) as count FROM memories WHERE agent = ?")
@@ -150,6 +215,7 @@ export class Storage {
   }
 
   wipe(agent?: string, category?: string): void {
+    this.checkClosed();
     let query = "DELETE FROM memories WHERE 1=1";
     const params: unknown[] = [];
 
@@ -166,10 +232,24 @@ export class Storage {
   }
 
   close(): void {
+    this.checkClosed();
+    this.closed = true;
     this.db.close();
   }
 
   private parseRow(row: Record<string, unknown>): Memory {
+    let embedding: number[] | null = null;
+    if (row.embedding != null) {
+      try {
+        const blob =
+          row.embedding instanceof Buffer
+            ? row.embedding
+            : Buffer.from(row.embedding as string);
+        embedding = JSON.parse(blob.toString("utf-8"));
+      } catch {
+        embedding = null;
+      }
+    }
     return {
       id: row.id as number,
       content: row.content as string,
@@ -177,11 +257,12 @@ export class Storage {
       agent: row.agent as string,
       importance: row.importance as string,
       confidence: row.confidence as number,
-      skip: (row.skip as number) === 1,
+      skipped: (row.skipped as number) === 1,
       access_count: row.access_count as number,
       created_at: row.created_at as string,
       updated_at: row.updated_at as string,
       metadata: JSON.parse((row.metadata as string) || "{}"),
+      embedding,
     };
   }
 }

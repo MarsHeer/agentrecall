@@ -1,57 +1,75 @@
 import re
-from agentrecall.models import MemoryType, MemoryPriority
 
 
 class MemoryClassifier:
-    """Classify memory content into types and priorities.
+    """Classify memory content into categories per the unified API spec.
 
-    Two modes:
-    - use_llm=False: Rule-based (free, instant)
-    - use_llm=True: LLM-based (smarter, costs ~$0.0001/classification)
+    Categories and trigger patterns (MUST be identical across SDKs):
+    - correction: actually, in fact, correction, wrong, not quite, instead,
+                  should be, meant to, I meant, don't, never, stop
+    - preference: prefer, like, love, hate, favorite, best, worst, always,
+                  never use, do not use, use instead, switch to, my style,
+                  I want, keep it
+    - temporal: yesterday, today, tomorrow, last week/month/year,
+                next week/month/year, ago, recently, deadline, reminder,
+                schedule, YYYY-MM-DD dates
+    - factual: is, are, was, were, has, have, had, located, found, based, lives
+    - general: fallback for anything unclassified
     """
 
-    SKIP_PATTERNS = [
-        r"wget.*download",
-        r"apt-get.*install",
-        r"pip.*install",
-        r"command.*executed",
-        r"process.*started",
-        r"downloaded.*successfully",
-        r"installation complete",
-        r"backup.*created",
+    # Multi-word preference patterns are checked before correction patterns
+    # to avoid "never use" matching as correction via "never"
+    PREFERENCE_PATTERNS = [
+        r"\bprefer\b",
+        r"\blike\b",
+        r"\blove\b",
+        r"\bhate\b",
+        r"\bfavorite\b",
+        r"\bbest\b",
+        r"\bworst\b",
+        r"\balways\b",
+        r"\bnever use\b",
+        r"\bdo not use\b",
+        r"\buse instead\b",
+        r"\bswitch to\b",
+        r"\bmy style\b",
+        r"\bi want\b",
+        r"\bkeep it\b",
     ]
 
     CORRECTION_PATTERNS = [
-        r"don'?t",
-        r"never",
-        r"stop",
-        r"wrong",
-        r"that'?s incorrect",
-        r"remember this",
-        r"don'?t do that",
-        r"no,?\s",
-        r"actually",
-    ]
-
-    PREFERENCE_PATTERNS = [
-        r"prefer",
-        r"like.*to",
-        r"always",
-        r"never.*use",
-        r"my style",
-        r"i want",
-        r"keep it",
-        r"don'?t.*change",
+        r"\bactually\b",
+        r"\bin fact\b",
+        r"\bcorrection\b",
+        r"\bwrong\b",
+        r"\bnot quite\b",
+        r"\binstead\b",
+        r"\bshould be\b",
+        r"\bmeant to\b",
+        r"\bi meant\b",
+        r"\bdon'?t\b",
+        r"\bnever\b",
+        r"\bstop\b",
     ]
 
     TEMPORAL_PATTERNS = [
-        r"tomorrow",
-        r"next week",
-        r"on monday",
-        r"today",
-        r"deadline",
-        r"reminder",
-        r"schedule",
+        r"\byesterday\b",
+        r"\btoday\b",
+        r"\btomorrow\b",
+        r"\blast\s+(week|month|year)\b",
+        r"\bnext\s+(week|month|year)\b",
+        r"\bage\b",
+        r"\brecently\b",
+        r"\bdeadline\b",
+        r"\breminder\b",
+        r"\bschedule\b",
+        r"\b\d{4}-\d{2}-\d{2}\b",
+    ]
+
+    FACTUAL_PATTERNS = [
+        r"\bis\b", r"\bare\b", r"\bwas\b", r"\bwere\b",
+        r"\bhas\b", r"\bhave\b", r"\bhad\b",
+        r"\blocated\b", r"\bfound\b", r"\bbased\b", r"\blives\b",
     ]
 
     def __init__(self, use_llm: bool = False, model: str = "gpt-4o-mini"):
@@ -59,27 +77,32 @@ class MemoryClassifier:
         self.model = model
 
     def classify(self, content: str) -> dict:
+        """Classify content into a category with importance.
+
+        Returns dict with keys: category, importance
+        """
         content_lower = content.lower()
 
-        # Check SKIP patterns first
-        for pattern in self.SKIP_PATTERNS:
-            if re.search(pattern, content_lower):
-                return {"memory_type": MemoryType.SKIP, "priority": MemoryPriority.LOW, "ttl_seconds": None, "tags": []}
-
-        # Check CORRECTION patterns
-        for pattern in self.CORRECTION_PATTERNS:
-            if re.search(pattern, content_lower):
-                return {"memory_type": MemoryType.CORRECTION, "priority": MemoryPriority.HIGH, "ttl_seconds": None, "tags": ["correction"]}
-
-        # Check PREFERENCE patterns
+        # Check preference first (multi-word patterns like "never use"
+        # are more specific than correction's standalone "never")
         for pattern in self.PREFERENCE_PATTERNS:
             if re.search(pattern, content_lower):
-                return {"memory_type": MemoryType.PREFERENCE, "priority": MemoryPriority.HIGH, "ttl_seconds": None, "tags": ["preference"]}
+                return {"category": "preference", "importance": "high"}
 
-        # Check TEMPORAL patterns
+        # Check correction patterns
+        for pattern in self.CORRECTION_PATTERNS:
+            if re.search(pattern, content_lower):
+                return {"category": "correction", "importance": "high"}
+
+        # Check temporal patterns
         for pattern in self.TEMPORAL_PATTERNS:
             if re.search(pattern, content_lower):
-                return {"memory_type": MemoryType.TEMPORARY, "priority": MemoryPriority.MEDIUM, "ttl_seconds": 604800, "tags": ["temporal"]}
+                return {"category": "temporal", "importance": "medium"}
 
-        # Default: user fact
-        return {"memory_type": MemoryType.USER_FACT, "priority": MemoryPriority.MEDIUM, "ttl_seconds": None, "tags": []}
+        # Check factual patterns
+        for pattern in self.FACTUAL_PATTERNS:
+            if re.search(pattern, content_lower):
+                return {"category": "factual", "importance": "medium"}
+
+        # General fallback
+        return {"category": "general", "importance": "medium"}

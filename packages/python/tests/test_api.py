@@ -3,10 +3,12 @@ from agentrecall.server import app
 
 client = TestClient(app)
 
+
 def test_health():
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
 
 def test_save_memory():
     response = client.post("/v1/memories", json={
@@ -15,8 +17,10 @@ def test_save_memory():
     })
     assert response.status_code == 200
     data = response.json()
-    assert data["agent_id"] == "api_test"
+    assert data["agent"] == "api_test"
     assert data["content"] == "User lives in Marbella"
+    assert data["category"] == "factual"
+
 
 def test_recall():
     client.post("/v1/memories", json={
@@ -28,6 +32,7 @@ def test_recall():
     data = response.json()
     assert len(data) >= 1
 
+
 def test_count():
     client.post("/v1/memories", json={
         "agent_id": "api_test3",
@@ -36,6 +41,7 @@ def test_count():
     response = client.get("/v1/memories/api_test3/count")
     assert response.status_code == 200
     assert response.json()["count"] >= 1
+
 
 def test_delete():
     resp = client.post("/v1/memories", json={
@@ -47,10 +53,12 @@ def test_delete():
     assert response.status_code == 200
     assert response.json()["deleted"] is True
 
-def test_skip_returns_skipped():
+
+def test_save_returns_general_for_unmatched():
+    """Content that doesn't match any specific category gets 'general'."""
     response = client.post("/v1/memories", json={
         "agent_id": "api_test5",
         "content": "wget downloaded file successfully"
     })
     assert response.status_code == 200
-    assert response.json()["memory_type"] == "skip"
+    assert response.json()["category"] == "general"

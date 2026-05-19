@@ -1,106 +1,264 @@
-import numpy as np
-from datetime import datetime
+import re
+import logging
+from datetime import datetime, timezone
 from agentrecall.storage import SQLiteStorage
 from agentrecall.embeddings import EmbeddingEngine
 from agentrecall.classifier import MemoryClassifier
-from agentrecall.models import Memory, MemoryType, RecallResult
+from agentrecall.models import Memory, RecallResult
 from agentrecall.config import AgentMemoryConfig
+
+logger = logging.getLogger(__name__)
+
+# Auto-skip detection patterns (internal heuristic, not a category)
+_SKIP_PATTERNS = [
+    r"wget.*download",
+    r"apt-get.*install",
+    r"pip.*install",
+    r"command.*executed",
+    r"process.*started",
+    r"downloaded.*successfully",
+    r"installation complete",
+    r"backup.*created",
+]
+
+# Importance weights per the spec
+_IMPORTANCE_WEIGHTS = {"high": 1.3, "medium": 1.0, "low": 0.7}
 
 
 class MemoryStore:
-    def __init__(self, db_path: str = "agentrecall.db", config: AgentMemoryConfig | None = None):
+    """Unified memory store matching the API spec.
+
+    Supports: remember, recall, get, update, delete, skip, unskip, count, wipe, close.
+    Also supports context manager (with statement).
+    """
+
+    def __init__(self, db_path: str = None, config: AgentMemoryConfig | None = None):
         self.config = config or AgentMemoryConfig()
-        self.storage = SQLiteStorage(db_path)
+        actual_db_path = db_path or self.config.db_path
+        self.storage = SQLiteStorage(actual_db_path)
         self.embeddings = EmbeddingEngine(self.config.embedding_model)
         self.classifier = MemoryClassifier(use_llm=False)
-        self._embedding_cache: dict[str, list[float]] = {}
+        self._embedding_cache: dict[int, list[float]] = {}
+        self._closed = False
 
-    def save(self, agent_id: str, content: str, tags: list[str] = []) -> Memory | None:
-        """Save a memory. Returns None if classified as SKIP."""
-        classification = self.classifier.classify(content)
+    # -- Context manager ---------------------------------------------------
 
-        if classification["memory_type"] == MemoryType.SKIP:
-            return None
+    def __enter__(self):
+        return self
 
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+    def close(self):
+        """Close database connection."""
+        self._closed = True
+        self.storage.close()
+
+    def _check_closed(self):
+        if self._closed:
+            raise RuntimeError("MemoryStore is closed")
+
+    # -- Core methods per spec ---------------------------------------------
+
+    def remember(
+        self,
+        content: str,
+        *,
+        agent: str = "default",
+        category: str = None,
+        importance: str = "medium",
+        metadata: dict = None,
+    ) -> Memory:
+        """Store a memory. Auto-classifies if category not provided."""
+        self._check_closed()
+
+        if not content or not content.strip():
+            raise ValueError("Content must not be empty")
+
+        # Auto-classify if category not provided
+        if category is None:
+            classification = self.classifier.classify(content)
+            category = classification["category"]
+            # Use classifier importance only when caller didn't specify
+            if importance == "medium":
+                importance = classification.get("importance", "medium")
+
+        now = datetime.now(timezone.utc)
         memory = Memory(
-            agent_id=agent_id,
-            content=content,
-            memory_type=classification["memory_type"],
-            priority=classification["priority"],
-            tags=tags + classification.get("tags", []),
-            ttl_seconds=classification.get("ttl_seconds"),
+            content=content.strip(),
+            category=category,
+            agent=agent,
+            importance=importance,
+            metadata=metadata or {},
+            created_at=now,
+            updated_at=now,
         )
-
-        if memory.ttl_seconds:
-            from datetime import timedelta
-            memory.expires_at = datetime.utcnow() + timedelta(seconds=memory.ttl_seconds)
 
         memory = self.storage.store(memory)
 
-        # Store embedding in cache and DB
-        embedding = self.embeddings.embed(content)
-        self._embedding_cache[memory.id] = embedding
-        self.storage.store_embedding(memory.id, embedding)
+        # Compute and store embedding
+        try:
+            embedding = self.embeddings.embed(content)
+            self._embedding_cache[memory.id] = embedding
+            self.storage.store_embedding(memory.id, embedding)
+        except Exception as e:
+            logger.warning(f"Embedding computation failed: {e}. "
+                           "Falling back to confidence+recency scoring.")
 
         return memory
 
-    def recall(self, agent_id: str, query: str, limit: int = 5) -> list[RecallResult]:
-        """Recall memories relevant to a query using hybrid RAG."""
+    def recall(
+        self,
+        query: str,
+        *,
+        agent: str = "default",
+        category: str = None,
+        limit: int = 5,
+        min_score: float = 0.0,
+    ) -> list[RecallResult]:
+        """Find relevant memories using hybrid scoring."""
+        self._check_closed()
+
+        if not query or not query.strip():
+            raise ValueError("Query must not be empty")
+
+        # Run confidence decay for this agent before scoring
+        from agentrecall.lifecycle import MemoryLifecycle
+        lifecycle = MemoryLifecycle(
+            db_path=self.storage.db_path,
+            decay_rate=self.config.decay_rate,
+            min_confidence=self.config.min_confidence,
+        )
+        lifecycle.storage = self.storage
+        lifecycle.run_decay(agent)
+
         # Get all memories for this agent
-        all_memories = self.storage.list_all(agent_id)
+        all_memories = self.storage.list_all(agent)
+        if not all_memories:
+            return []
+
+        # Filter by category if provided
+        if category:
+            all_memories = [m for m in all_memories if m.category == category]
 
         if not all_memories:
             return []
 
-        # Filter expired
-        now = datetime.utcnow()
-        valid = [m for m in all_memories if not m.expires_at or m.expires_at > now]
-
-        if not valid:
-            return []
-
         # Compute query embedding
-        query_vec = self.embeddings.embed(query)
+        try:
+            query_vec = self.embeddings.embed(query)
+            has_embeddings = True
+        except Exception as e:
+            logger.warning(f"Query embedding failed: {e}. Using fallback scoring.")
+            query_vec = None
+            has_embeddings = False
 
-        # Score each memory
+        # Score each memory per the spec formula:
+        # score = similarity × confidence × importance_weight × recency × skip_penalty
         results = []
-        for memory in valid:
-            # Get cached or stored embedding
-            if memory.id in self._embedding_cache:
-                mem_vec = self._embedding_cache[memory.id]
+        now = datetime.now(timezone.utc)
+
+        for memory in all_memories:
+            # --- similarity ---
+            if has_embeddings:
+                mem_vec = self._get_embedding(memory.id, memory.content)
+                if mem_vec is not None:
+                    similarity = self.embeddings.similarity(query_vec, mem_vec)
+                else:
+                    similarity = 1.0  # fallback
             else:
-                mem_vec = self.storage.get_embedding(memory.id)
-                if mem_vec is None:
-                    mem_vec = self.embeddings.embed(memory.content)
-                    self.storage.store_embedding(memory.id, mem_vec)
-                self._embedding_cache[memory.id] = mem_vec
+                similarity = 1.0
 
-            # Semantic similarity
-            semantic_score = self.embeddings.similarity(query_vec, mem_vec)
+            # --- confidence ---
+            confidence = memory.confidence
 
-            # Confidence boost
-            confidence_boost = memory.confidence
+            # --- importance_weight ---
+            importance_weight = _IMPORTANCE_WEIGHTS.get(memory.importance, 1.0)
 
-            # Priority boost
-            priority_boost = {"high": 1.3, "medium": 1.0, "low": 0.7}.get(memory.priority.value, 1.0)
+            # --- recency ---
+            days_since_creation = max(0, (now - memory.created_at).days)
+            recency = 1.0 / (1.0 + days_since_creation * 0.05)
 
-            # SKIP memories get penalized
-            skip_penalty = 0.2 if memory.memory_type == MemoryType.SKIP else 1.0
+            # --- skip_penalty ---
+            skip_penalty = 0.2 if memory.skipped else 1.0
 
-            # Final score
-            score = semantic_score * confidence_boost * priority_boost * skip_penalty
+            # --- final score ---
+            score = (
+                similarity
+                * confidence
+                * importance_weight
+                * recency
+                * skip_penalty
+            )
 
-            results.append(RecallResult(memory=memory, score=score, source="semantic"))
+            if score >= min_score:
+                results.append(RecallResult(memory=memory, score=score))
 
         # Sort by score descending
         results.sort(key=lambda r: r.score, reverse=True)
-
         return results[:limit]
 
-    def delete(self, memory_id: str):
-        """Delete a memory by ID."""
-        self.storage.delete(memory_id)
+    def get(self, id: int) -> Memory | None:
+        """Get a single memory by ID. Returns None if not found."""
+        self._check_closed()
+        return self.storage.get(id)
 
-    def count(self, agent_id: str) -> int:
-        """Count memories for an agent."""
-        return len(self.storage.list_all(agent_id))
+    def update(self, id: int, content: str) -> None:
+        """Update a memory's content."""
+        self._check_closed()
+        if not content or not content.strip():
+            raise ValueError("Content must not be empty")
+        memory = self.storage.get(id)
+        if memory is None:
+            return  # no-op for invalid IDs per spec
+        memory.content = content.strip()
+        memory.updated_at = datetime.now(timezone.utc)
+        self.storage.store(memory)
+
+    def delete(self, id: int) -> None:
+        """Delete a memory permanently."""
+        self._check_closed()
+        self.storage.delete(id)
+
+    def skip(self, id: int) -> None:
+        """Mark a memory as skipped (reduces recall score by 80%)."""
+        self._check_closed()
+        self.storage.skip(id)
+
+    def unskip(self, id: int) -> None:
+        """Unmark a skipped memory."""
+        self._check_closed()
+        self.storage.unskip(id)
+
+    def count(self, agent: str = None) -> int:
+        """Count memories, optionally filtered by agent."""
+        self._check_closed()
+        return self.storage.count(agent=agent)
+
+    def wipe(self, agent: str = None, category: str = None) -> None:
+        """Delete memories. Filter by agent and/or category. If no filters, delete ALL."""
+        self._check_closed()
+        self.storage.wipe(agent=agent, category=category)
+
+    # -- Internal helpers --------------------------------------------------
+
+    def _get_embedding(self, memory_id: int, content: str) -> list[float] | None:
+        """Get embedding from cache, DB, or compute on the fly."""
+        if memory_id in self._embedding_cache:
+            return self._embedding_cache[memory_id]
+
+        mem_vec = self.storage.get_embedding(memory_id)
+        if mem_vec is not None:
+            self._embedding_cache[memory_id] = mem_vec
+            return mem_vec
+
+        # Compute and cache
+        try:
+            mem_vec = self.embeddings.embed(content)
+            self._embedding_cache[memory_id] = mem_vec
+            self.storage.store_embedding(memory_id, mem_vec)
+            return mem_vec
+        except Exception as e:
+            logger.warning(f"Failed to compute embedding for memory {memory_id}: {e}")
+            return None

@@ -1,37 +1,25 @@
 from pydantic import BaseModel, Field
-from datetime import datetime
-from enum import Enum
+from datetime import datetime, timezone
 from typing import Optional
 
-class MemoryType(str, Enum):
-    USER_FACT = "user_fact"
-    PREFERENCE = "preference"
-    CORRECTION = "correction"
-    ENVIRONMENT = "environment"
-    TEMPORARY = "temporary"
-    SKIP = "skip"
-
-class MemoryPriority(str, Enum):
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
 
 class Memory(BaseModel):
-    id: Optional[str] = None
-    agent_id: str
+    """Memory data model matching the unified API spec."""
+    id: Optional[int] = None
     content: str
-    memory_type: MemoryType = MemoryType.USER_FACT
-    priority: MemoryPriority = MemoryPriority.MEDIUM
-    tags: list[str] = []
+    category: str = "general"          # preference, correction, temporal, factual, general
+    agent: str = "default"
+    importance: str = "medium"          # high, medium, low
     confidence: float = 1.0
-    ttl_seconds: Optional[int] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
-    expires_at: Optional[datetime] = None
+    skipped: bool = False
     access_count: int = 0
-    last_accessed: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    metadata: dict = Field(default_factory=dict)
+    embedding: Optional[list[float]] = None
+
 
 class RecallResult(BaseModel):
+    """Extends Memory with a composite relevance score."""
     memory: Memory
     score: float
-    source: str  # "semantic" | "keyword" | "recency" | "graph"

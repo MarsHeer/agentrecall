@@ -1,51 +1,54 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from agentrecall.storage import SQLiteStorage
 from agentrecall.models import Memory
 
 
 class MemoryLifecycle:
+    """Handle memory lifecycle: confidence decay and cleanup."""
+
     def __init__(self, db_path: str, decay_rate: float = 0.01, min_confidence: float = 0.1):
         self.storage = SQLiteStorage(db_path)
         self.decay_rate = decay_rate
         self.min_confidence = min_confidence
 
-    def cleanup_expired(self, agent_id: str) -> int:
-        """Remove expired memories. Returns count removed."""
-        now = datetime.utcnow().isoformat()
+    def cleanup_expired(self, agent: str) -> int:
+        """Remove expired memories (legacy TTL support). Returns count removed."""
+        now = datetime.now(timezone.utc).isoformat()
         cursor = self.storage.conn.execute(
-            "DELETE FROM memories WHERE agent_id = ? AND expires_at IS NOT NULL AND expires_at < ?",
-            (agent_id, now)
+            "DELETE FROM memories WHERE agent = ? AND updated_at < ?",
+            (agent, now),
         )
         self.storage.conn.commit()
         return cursor.rowcount
 
     def decay_confidence(self, memory: Memory, days: int) -> float:
-        """Calculate decayed confidence."""
-        return max(0.0, memory.confidence - (self.decay_rate * days))
+        """Calculate decayed confidence using multiplicative formula.
 
-    def run_decay(self, agent_id: str) -> int:
-        """Apply decay to all memories and remove those below threshold."""
-        now = datetime.utcnow()
-        memories = self.storage.list_all(agent_id)
+        new_confidence = confidence × (1 - decay_rate)^days
+        """
+        return max(0.0, memory.confidence * ((1 - self.decay_rate) ** days))
+
+    def run_decay(self, agent: str) -> int:
+        """Apply decay to all memories and remove those below threshold.
+
+        Returns count of memories removed.
+        """
+        now = datetime.now(timezone.utc)
+        memories = self.storage.list_all(agent)
         removed = 0
 
         for m in memories:
-            days_old = (now - m.updated_at).days
+            days_old = max(0, (now - m.updated_at).days)
             new_conf = self.decay_confidence(m, days_old)
 
             if new_conf < self.min_confidence:
                 self.storage.delete(m.id)
                 removed += 1
             elif new_conf != m.confidence:
-                m.confidence = new_conf
-                self.storage.store(m)
+                self.storage.update_confidence(m.id, new_conf)
 
         return removed
 
-    def touch(self, memory_id: str):
-        """Update last_accessed and access_count."""
-        self.storage.conn.execute(
-            "UPDATE memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?",
-            (datetime.utcnow().isoformat(), memory_id)
-        )
-        self.storage.conn.commit()
+    def touch(self, memory_id: int):
+        """Update access_count for a memory."""
+        self.storage.increment_access(memory_id)
