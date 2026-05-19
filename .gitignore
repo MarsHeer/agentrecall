@@ -26,3 +26,6 @@ Thumbs.db
 .env
 .env.local
 .npmrc
+
+# Logs
+latest_logs/
