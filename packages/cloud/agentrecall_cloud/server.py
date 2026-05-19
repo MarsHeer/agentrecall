@@ -1,5 +1,6 @@
 """AgentRecall Cloud API — main FastAPI server."""
 
+import json
 import logging
 import stripe
 from contextlib import asynccontextmanager
@@ -846,14 +847,20 @@ async def stripe_webhook(request: Request):
         event = stripe.Webhook.construct_event(
             payload, sig_header, config.stripe_webhook_secret
         )
-    except stripe.error.SignatureVerificationError as e:
-        logger.warning("Stripe webhook signature verification failed: %s", e)
-        raise HTTPException(status_code=400, detail="Invalid webhook signature")
+    except (stripe.error.SignatureVerificationError, ValueError, Exception) as e:
+        logger.warning("Stripe webhook error: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid webhook")
+
+    # Parse payload as plain JSON dict (avoids stripe object attribute issues)
+    payload_json = json.loads(payload)
+    event_type = payload_json["type"]
+    event_data = payload_json["data"]["object"]
+    logger.info("Stripe webhook received: %s", event_type)
 
     pool = await get_pool()
 
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
+    if event_type == "checkout.session.completed":
+        session = event_data
         user_id = session.get("metadata", {}).get("user_id")
         customer_id = session.get("customer")
         subscription_id = session.get("subscription")
@@ -878,8 +885,8 @@ async def stripe_webhook(request: Request):
                 )
             logger.info("Checkout completed for user %s", user_id)
 
-    elif event["type"] == "customer.subscription.updated":
-        subscription = event["data"]["object"]
+    elif event_type == "customer.subscription.updated":
+        subscription = event_data
         subscription_id = subscription.get("id")
         sub_status = subscription.get("status")
 
@@ -902,8 +909,8 @@ async def stripe_webhook(request: Request):
                 )
             logger.info("Subscription %s updated: %s", subscription_id, sub_status)
 
-    elif event["type"] == "customer.subscription.deleted":
-        subscription = event["data"]["object"]
+    elif event_type == "customer.subscription.deleted":
+        subscription = event_data
         subscription_id = subscription.get("id")
 
         async with pool.acquire() as conn:
@@ -917,8 +924,8 @@ async def stripe_webhook(request: Request):
             )
         logger.info("Subscription %s deleted", subscription_id)
 
-    elif event["type"] == "invoice.payment_failed":
-        invoice = event["data"]["object"]
+    elif event_type == "invoice.payment_failed":
+        invoice = event_data
         customer_id = invoice.get("customer")
 
         async with pool.acquire() as conn:
