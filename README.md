@@ -8,8 +8,8 @@ Plug-and-play persistent memory for AI agents. Open source, zero config.
 
 | Package | Install | Description |
 |---------|---------|-------------|
-| [Python SDK](./packages/python) | `pip install agentrecall-sdk` | Full-featured memory store with embeddings support |
-| [Node.js SDK](./packages/node) | `npm install agentrecall-ai-sdk` | TypeScript-first with SQLite and optional embeddings |
+| [Python SDK](https://pypi.org/project/agentrecall-sdk/) | `pip install agentrecall-sdk` | Full-featured memory store with embeddings support |
+| [Node.js SDK](https://www.npmjs.com/package/agentrecall-ai-sdk) | `npm install agentrecall-ai-sdk` | TypeScript-first with SQLite and optional embeddings |
 
 ## Quick Start
 
