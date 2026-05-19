@@ -857,9 +857,29 @@ async def login(request: Request):
             "SELECT id, email, password_hash FROM auth_users WHERE email = $1",
             email
         )
-        if not row or not bcrypt.checkpw(password.encode(), row["password_hash"].encode()):
+        if not row:
             raise HTTPException(status_code=401, detail="Invalid email or password")
-        
+
+        stored_hash = row["password_hash"]
+        # Detect hash format: bcrypt starts with $2b$, SHA-256 is 64 hex chars
+        if stored_hash.startswith("$2b$"):
+            valid = bcrypt.checkpw(password.encode(), stored_hash.encode())
+        elif len(stored_hash) == 64 and all(c in "0123456789abcdef" for c in stored_hash):
+            import hashlib
+            valid = hashlib.sha256(password.encode()).hexdigest() == stored_hash
+            if valid:
+                # Auto-migrate to bcrypt
+                new_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+                await conn.execute(
+                    "UPDATE auth_users SET password_hash = $1 WHERE id = $2",
+                    new_hash, row["id"],
+                )
+        else:
+            valid = False
+
+        if not valid:
+            raise HTTPException(status_code=401, detail="Invalid email or password")
+
         user_id = str(row["id"])
         
         import jwt as pyjwt
