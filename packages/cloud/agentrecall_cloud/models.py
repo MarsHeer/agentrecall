@@ -40,7 +40,15 @@ class RecallResult(BaseModel):
 
 # --- Agent ---
 
+class MemoryUpdate(BaseModel):
+    content: str
+
+
 class AgentCreate(BaseModel):
+    name: str
+
+
+class AgentUpdate(BaseModel):
     name: str
 
 

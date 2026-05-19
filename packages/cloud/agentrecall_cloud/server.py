@@ -10,11 +10,14 @@ from agentrecall_cloud.config import config
 from agentrecall_cloud.database import get_pool, init_db, init_auth, close_pool
 from agentrecall_cloud.auth import get_current_user, generate_api_key, hash_api_key
 from agentrecall_cloud.scoring import classify, should_skip, compute_score
+import bcrypt
 from agentrecall_cloud.models import (
     MemoryCreate,
     MemoryResponse,
+    MemoryUpdate,
     RecallResult,
     AgentCreate,
+    AgentUpdate,
     AgentResponse,
     ApiKeyCreate,
     ApiKeyResponse,
@@ -531,6 +534,244 @@ async def get_usage(user: dict = Depends(get_current_user)):
         }
 
 
+# ─── Memory Management ───────────────────────────────────────────
+
+
+@app.put("/v1/memories/{memory_id}", response_model=MemoryResponse)
+async def update_memory(
+    memory_id: int,
+    req: MemoryUpdate,
+    user: dict = Depends(get_current_user),
+):
+    """Update memory content."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT m.id, m.agent_id, m.content, m.category, m.importance,
+                   m.confidence, m.skipped, m.access_count, m.created_at,
+                   m.updated_at, m.metadata
+            FROM memories m
+            JOIN agents a ON m.agent_id = a.id
+            WHERE m.id = $1 AND a.user_id = $2
+            """,
+            memory_id,
+            user["user_id"],
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Memory not found")
+
+        updated = await conn.fetchrow(
+            """
+            UPDATE memories
+            SET content = $1, updated_at = now()
+            WHERE id = $2
+            RETURNING id, agent_id, content, category, importance, confidence,
+                      skipped, access_count, created_at, updated_at, metadata
+            """,
+            req.content,
+            memory_id,
+        )
+
+        return MemoryResponse(
+            id=updated["id"],
+            agent_id=str(updated["agent_id"]),
+            content=updated["content"],
+            category=updated["category"],
+            importance=updated["importance"],
+            confidence=updated["confidence"],
+            skipped=updated["skipped"],
+            access_count=updated["access_count"],
+            created_at=updated["created_at"].isoformat(),
+            updated_at=updated["updated_at"].isoformat(),
+            metadata=updated["metadata"] if isinstance(updated["metadata"], dict) else {},
+        )
+
+
+@app.post("/v1/memories/{memory_id}/skip", response_model=MessageResponse)
+async def skip_memory(
+    memory_id: int,
+    user: dict = Depends(get_current_user),
+):
+    """Mark a memory as skipped."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE memories SET skipped = true
+            WHERE id = $1 AND agent_id IN (
+                SELECT id FROM agents WHERE user_id = $2
+            )
+            """,
+            memory_id,
+            user["user_id"],
+        )
+        if result == "UPDATE 0":
+            raise HTTPException(status_code=404, detail="Memory not found")
+        return MessageResponse(message="Memory skipped")
+
+
+@app.delete("/v1/memories/{memory_id}/skip", response_model=MessageResponse)
+async def unskip_memory(
+    memory_id: int,
+    user: dict = Depends(get_current_user),
+):
+    """Unskip a memory."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE memories SET skipped = false
+            WHERE id = $1 AND agent_id IN (
+                SELECT id FROM agents WHERE user_id = $2
+            )
+            """,
+            memory_id,
+            user["user_id"],
+        )
+        if result == "UPDATE 0":
+            raise HTTPException(status_code=404, detail="Memory not found")
+        return MessageResponse(message="Memory unskipped")
+
+
+@app.get("/v1/memories", response_model=list[MemoryResponse])
+async def list_memories(
+    agent_id: str = None,
+    category: str = None,
+    limit: int = 50,
+    offset: int = 0,
+    user: dict = Depends(get_current_user),
+):
+    """List memories for the user."""
+    limit = min(limit, 200)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        conditions = ["a.user_id = $1"]
+        params: list = [user["user_id"]]
+        param_idx = 2
+
+        if agent_id:
+            conditions.append(f"m.agent_id = ${param_idx}")
+            params.append(agent_id)
+            param_idx += 1
+
+        if category:
+            conditions.append(f"m.category = ${param_idx}")
+            params.append(category)
+            param_idx += 1
+
+        where_clause = " AND ".join(conditions)
+
+        rows = await conn.fetch(
+            f"""
+            SELECT m.id, m.agent_id, m.content, m.category, m.importance,
+                   m.confidence, m.skipped, m.access_count, m.created_at,
+                   m.updated_at, m.metadata
+            FROM memories m
+            JOIN agents a ON m.agent_id = a.id
+            WHERE {where_clause}
+            ORDER BY m.created_at DESC
+            LIMIT ${param_idx} OFFSET ${param_idx + 1}
+            """,
+            *params,
+            limit,
+            offset,
+        )
+
+        return [
+            MemoryResponse(
+                id=r["id"],
+                agent_id=str(r["agent_id"]),
+                content=r["content"],
+                category=r["category"],
+                importance=r["importance"],
+                confidence=r["confidence"],
+                skipped=r["skipped"],
+                access_count=r["access_count"],
+                created_at=r["created_at"].isoformat(),
+                updated_at=r["updated_at"].isoformat(),
+                metadata=r["metadata"] if isinstance(r["metadata"], dict) else {},
+            )
+            for r in rows
+        ]
+
+
+# ─── Agent Management ─────────────────────────────────────────────
+
+
+@app.put("/v1/agents/{agent_id}", response_model=AgentResponse)
+async def update_agent(
+    agent_id: str,
+    req: AgentUpdate,
+    user: dict = Depends(get_current_user),
+):
+    """Rename an agent."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE agents SET name = $1
+            WHERE id = $2 AND user_id = $3
+            RETURNING id, name, memory_count, created_at, last_active_at
+            """,
+            req.name,
+            agent_id,
+            user["user_id"],
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return AgentResponse(
+            id=str(row["id"]),
+            name=row["name"],
+            memory_count=row["memory_count"],
+            created_at=row["created_at"].isoformat(),
+            last_active_at=row["last_active_at"].isoformat() if row["last_active_at"] else None,
+        )
+
+
+@app.get("/v1/agents/{agent_id}", response_model=AgentResponse)
+async def get_agent(
+    agent_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Get a single agent's details."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT id, name, memory_count, created_at, last_active_at
+            FROM agents WHERE id = $1 AND user_id = $2
+            """,
+            agent_id,
+            user["user_id"],
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        return AgentResponse(
+            id=str(row["id"]),
+            name=row["name"],
+            memory_count=row["memory_count"],
+            created_at=row["created_at"].isoformat(),
+            last_active_at=row["last_active_at"].isoformat() if row["last_active_at"] else None,
+        )
+
+
+# ─── Billing ──────────────────────────────────────────────────────
+
+
+@app.post("/v1/billing/checkout")
+async def create_checkout(user: dict = Depends(get_current_user)):
+    """Create a Stripe checkout session.
+
+    Stripe integration is not yet configured. Returns a placeholder
+    until STRIPE_SECRET_KEY is provided in the environment.
+    """
+    # TODO: when stripe is configured, use:
+    # import stripe
+    # session = stripe.checkout.Session.create(...)
+    return {"url": None, "message": "Stripe integration coming soon"}
+
+
 # ─── Main ────────────────────────────────────────────────────────────
 
 
@@ -568,8 +809,7 @@ async def signup(request: Request):
             raise HTTPException(status_code=409, detail="Email already registered")
         
         # Hash password with bcrypt
-        import hashlib
-        pw_hash = hashlib.sha256(password.encode()).hexdigest()
+        pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
         
         # Create user
         row = await conn.fetchrow(
@@ -613,14 +853,11 @@ async def login(request: Request):
     
     pool = await get_pool()
     async with pool.acquire() as conn:
-        import hashlib
-        pw_hash = hashlib.sha256(password.encode()).hexdigest()
-        
         row = await conn.fetchrow(
-            "SELECT id, email FROM auth_users WHERE email = $1 AND password_hash = $2",
-            email, pw_hash
+            "SELECT id, email, password_hash FROM auth_users WHERE email = $1",
+            email
         )
-        if not row:
+        if not row or not bcrypt.checkpw(password.encode(), row["password_hash"].encode()):
             raise HTTPException(status_code=401, detail="Invalid email or password")
         
         user_id = str(row["id"])

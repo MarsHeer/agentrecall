@@ -98,7 +98,7 @@ export async function searchMemories(
   agentId: string,
   category?: string
 ): Promise<RecallResult[]> {
-  const params = new URLSearchParams({ q: query, agent_id: agentId });
+  const params = new URLSearchParams({ query: query, agent_id: agentId });
   if (category) params.set("category", category);
   const res = await authFetch(`/v1/memories/recall?${params}`);
   if (!res.ok) throw new Error("Failed to search memories");
