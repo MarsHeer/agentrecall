@@ -28,11 +28,33 @@ _IMPORTANCE_WEIGHTS = {"high": 1.3, "medium": 1.0, "low": 0.7}
 class MemoryStore:
     """Unified memory store matching the API spec.
 
+    When config.mode is 'cloud' (or 'auto' with an api_key set), operations
+    are transparently routed to the Agent Recall cloud API.
+
     Supports: remember, recall, get, update, delete, skip, unskip, count, wipe, close.
     Also supports context manager (with statement).
     """
 
+    def __new__(cls, db_path: str = None, config: AgentMemoryConfig | None = None):
+        config = config or AgentMemoryConfig()
+        mode = config.mode
+        use_cloud = False
+        if mode == "cloud":
+            use_cloud = True
+        elif mode == "auto" and config.api_key:
+            use_cloud = True
+
+        if use_cloud:
+            from agentrecall.cloud import CloudClient
+            return CloudClient(config)
+
+        instance = super().__new__(cls)
+        return instance
+
     def __init__(self, db_path: str = None, config: AgentMemoryConfig | None = None):
+        # Guard: if __new__ returned a CloudClient, skip local init
+        if not isinstance(self, MemoryStore):
+            return
         self.config = config or AgentMemoryConfig()
         actual_db_path = db_path or self.config.db_path
         self.storage = SQLiteStorage(actual_db_path)

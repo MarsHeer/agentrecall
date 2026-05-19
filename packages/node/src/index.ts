@@ -6,4 +6,6 @@ export type {
   RememberOptions,
   RecallOptions,
   EmbeddingFunction,
+  StoreMode,
 } from "./types.js";
+export { CloudClient } from "./cloud.js";

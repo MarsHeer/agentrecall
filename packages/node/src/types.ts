@@ -32,3 +32,5 @@ export interface RecallOptions {
 }
 
 export type EmbeddingFunction = (text: string) => Promise<number[]>;
+
+export type StoreMode = 'local' | 'cloud' | 'auto';

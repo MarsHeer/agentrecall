@@ -1,11 +1,13 @@
 import { Storage } from "./storage.js";
 import { classify } from "./classifier.js";
+import { CloudClient } from "./cloud.js";
 import type {
   Memory,
   RecallResult,
   RememberOptions,
   RecallOptions,
   EmbeddingFunction,
+  StoreMode,
 } from "./types.js";
 
 const IMPORTANCE_WEIGHTS: Record<string, number> = {
@@ -19,20 +21,39 @@ export interface MemoryStoreOptions {
   embed?: EmbeddingFunction;
   decay_rate?: number;
   min_confidence?: number;
+  mode?: StoreMode;
+  cloudUrl?: string;
+  apiKey?: string;
 }
 
 export class MemoryStore {
-  private storage: Storage;
+  private storage: Storage | null = null;
   private embedFn: EmbeddingFunction | null;
   private closed = false;
   private decayRate: number;
   private minConfidence: number;
+  private cloud: CloudClient | null = null;
+  private _isCloud: boolean;
 
   constructor(options: MemoryStoreOptions = {}) {
-    this.storage = new Storage(options.dbPath);
     this.embedFn = options.embed || null;
     this.decayRate = options.decay_rate ?? 0.01;
     this.minConfidence = options.min_confidence ?? 0.1;
+
+    const mode = options.mode || "auto";
+    const hasApiKey = !!options.apiKey && options.apiKey.length > 0;
+
+    if (mode === "cloud" || (mode === "auto" && hasApiKey)) {
+      if (!options.apiKey) {
+        throw new Error("apiKey is required for cloud mode");
+      }
+      const cloudUrl = options.cloudUrl || "http://localhost:8700";
+      this.cloud = new CloudClient(cloudUrl, options.apiKey);
+      this._isCloud = true;
+    } else {
+      this.storage = new Storage(options.dbPath);
+      this._isCloud = false;
+    }
   }
 
   private checkClosed(): void {
@@ -61,6 +82,10 @@ export class MemoryStore {
     const importance = options.importance || "medium";
     const metadata = options.metadata || {};
 
+    if (this._isCloud && this.cloud) {
+      return this.cloud.remember(content, { ...options, agent, category, importance, metadata });
+    }
+
     // Generate embedding if function provided
     let embedding: number[] | null = null;
     if (this.embedFn) {
@@ -72,7 +97,7 @@ export class MemoryStore {
       }
     }
 
-    const id = this.storage.insert(
+    const id = this.storage!.insert(
       content,
       category,
       agent,
@@ -81,7 +106,7 @@ export class MemoryStore {
       embedding
     );
 
-    return this.storage.get(id)!;
+    return this.storage!.get(id)!;
   }
 
   /**
@@ -100,6 +125,10 @@ export class MemoryStore {
       throw new Error("Query cannot be empty");
     }
 
+    if (this._isCloud && this.cloud) {
+      return this.cloud.recall(query, options);
+    }
+
     const agent = options.agent || "default";
     const category = options.category;
     const limit = options.limit || 5;
@@ -109,7 +138,7 @@ export class MemoryStore {
     this.runDecay();
 
     // Get candidate memories (include skipped ones — they get penalized in scoring)
-    const candidates = this.storage.search(agent, category, limit * 3, false);
+    const candidates = this.storage!.search(agent, category, limit * 3, false);
 
     if (candidates.length === 0) return [];
 
@@ -155,7 +184,11 @@ export class MemoryStore {
     if (!content || content.trim().length === 0) {
       throw new Error("Content cannot be empty");
     }
-    this.storage.update(id, { content });
+    if (this._isCloud && this.cloud) {
+      console.warn("Cloud mode: update() is not supported. Use remember() to store new memories.");
+      return;
+    }
+    this.storage!.update(id, { content });
   }
 
   /**
@@ -164,7 +197,11 @@ export class MemoryStore {
    */
   skip(id: number): void {
     this.checkClosed();
-    this.storage.update(id, { skipped: true });
+    if (this._isCloud && this.cloud) {
+      console.warn("Cloud mode: skip() is not supported.");
+      return;
+    }
+    this.storage!.update(id, { skipped: true });
   }
 
   /**
@@ -173,7 +210,11 @@ export class MemoryStore {
    */
   unskip(id: number): void {
     this.checkClosed();
-    this.storage.update(id, { skipped: false });
+    if (this._isCloud && this.cloud) {
+      console.warn("Cloud mode: unskip() is not supported.");
+      return;
+    }
+    this.storage!.update(id, { skipped: false });
   }
 
   /**
@@ -182,7 +223,12 @@ export class MemoryStore {
    */
   delete(id: number): void {
     this.checkClosed();
-    this.storage.delete(id);
+    if (this._isCloud && this.cloud) {
+      // Cloud delete is async; fire and forget for backward compat
+      this.cloud.delete(id).catch((e: unknown) => console.warn("Cloud delete failed:", e));
+      return;
+    }
+    this.storage!.delete(id);
   }
 
   /**
@@ -192,7 +238,11 @@ export class MemoryStore {
    */
   get(id: number): Memory | undefined {
     this.checkClosed();
-    return this.storage.get(id);
+    if (this._isCloud && this.cloud) {
+      console.warn("Cloud mode: use recall() to search memories instead of get()");
+      return undefined;
+    }
+    return this.storage!.get(id);
   }
 
   /**
@@ -202,7 +252,12 @@ export class MemoryStore {
    */
   count(agent?: string): number {
     this.checkClosed();
-    return this.storage.count(agent);
+    if (this._isCloud && this.cloud) {
+      // Cloud count is async; return 0 for sync interface
+      console.warn("Cloud mode: use countAsync() for accurate count");
+      return 0;
+    }
+    return this.storage!.count(agent);
   }
 
   /**
@@ -211,7 +266,43 @@ export class MemoryStore {
    */
   wipe(options: { agent?: string; category?: string } = {}): void {
     this.checkClosed();
-    this.storage.wipe(options.agent, options.category);
+    if (this._isCloud && this.cloud) {
+      this.cloud.wipe(options).catch((e: unknown) => console.warn("Cloud wipe failed:", e));
+      return;
+    }
+    this.storage!.wipe(options.agent, options.category);
+  }
+
+  /** Async count for cloud mode. */
+  async countAsync(agent?: string): Promise<number> {
+    this.checkClosed();
+    if (this._isCloud && this.cloud) {
+      return this.cloud.count(agent);
+    }
+    return this.storage!.count(agent);
+  }
+
+  /** Async delete for cloud mode. */
+  async deleteAsync(id: number): Promise<void> {
+    this.checkClosed();
+    if (this._isCloud && this.cloud) {
+      return this.cloud.delete(id);
+    }
+    this.storage!.delete(id);
+  }
+
+  /** Async wipe for cloud mode. */
+  async wipeAsync(options: { agent?: string; category?: string } = {}): Promise<void> {
+    this.checkClosed();
+    if (this._isCloud && this.cloud) {
+      return this.cloud.wipe(options);
+    }
+    this.storage!.wipe(options.agent, options.category);
+  }
+
+  /** Get the underlying mode. */
+  get mode(): StoreMode {
+    return this._isCloud ? "cloud" : "local";
   }
 
   /**
@@ -220,7 +311,11 @@ export class MemoryStore {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    this.storage.close();
+    if (this.cloud) {
+      this.cloud.close();
+    } else if (this.storage) {
+      this.storage.close();
+    }
   }
 
   /**
@@ -229,7 +324,7 @@ export class MemoryStore {
    * Memories below min_confidence are auto-deleted.
    */
   private runDecay(): void {
-    const allMemories = this.storage.getAll();
+    const allMemories = this.storage!.getAll();
     const toDelete: number[] = [];
 
     for (const mem of allMemories) {
@@ -237,12 +332,12 @@ export class MemoryStore {
       if (newConfidence < this.minConfidence) {
         toDelete.push(mem.id);
       } else if (Math.abs(newConfidence - mem.confidence) > 1e-10) {
-        this.storage.update(mem.id, { confidence: newConfidence });
+        this.storage!.update(mem.id, { confidence: newConfidence });
       }
     }
 
     if (toDelete.length > 0) {
-      this.storage.deleteMany(toDelete);
+      this.storage!.deleteMany(toDelete);
     }
   }
 
