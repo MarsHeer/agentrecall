@@ -11,6 +11,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [upgrading, setUpgrading] = useState(false);
+  const [managing, setManaging] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
@@ -31,8 +32,6 @@ export default function SettingsPage() {
   async function handleUpgrade() {
     setUpgrading(true);
     try {
-      // In production this would hit a /v1/billing/checkout endpoint
-      // that creates a Stripe Checkout session and redirects
       const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8700";
       const { getAccessToken } = await import("@/lib/supabase");
       const token = await getAccessToken();
@@ -53,6 +52,33 @@ export default function SettingsPage() {
       setError("Checkout not available yet. Coming soon!");
     } finally {
       setUpgrading(false);
+    }
+  }
+
+  async function handleManage() {
+    setManaging(true);
+    try {
+      const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8700";
+      const { getAccessToken } = await import("@/lib/supabase");
+      const token = await getAccessToken();
+      const res = await fetch(`${API_BASE}/v1/billing/portal`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.url) window.location.href = data.url;
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setError(err.detail || "Could not open subscription management");
+      }
+    } catch {
+      setError("Could not open subscription management");
+    } finally {
+      setManaging(false);
     }
   }
 
@@ -109,14 +135,23 @@ export default function SettingsPage() {
         <h2 className="text-sm font-semibold">Subscription</h2>
 
         {usage?.plan === "pro" ? (
-          <div className="flex items-center gap-3 p-3 rounded-lg bg-[var(--color-success)]/5 border border-[var(--color-success)]/20">
-            <span className="text-[var(--color-success)]">✓</span>
-            <div>
-              <p className="text-sm font-medium">Pro Plan</p>
-              <p className="text-xs text-[var(--color-text-muted)]">
-                Unlimited memories and API calls
-              </p>
+          <div className="space-y-3">
+            <div className="flex items-center gap-3 p-3 rounded-lg bg-[var(--color-success)]/5 border border-[var(--color-success)]/20">
+              <span className="text-[var(--color-success)]">✓</span>
+              <div>
+                <p className="text-sm font-medium">Pro Plan</p>
+                <p className="text-xs text-[var(--color-text-muted)]">
+                  Unlimited memories and API calls
+                </p>
+              </div>
             </div>
+            <button
+              onClick={handleManage}
+              disabled={managing}
+              className="px-4 py-2 rounded-lg border border-[var(--color-border)] text-sm text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] transition-colors disabled:opacity-50"
+            >
+              {managing ? "Opening..." : "Manage Subscription"}
+            </button>
           </div>
         ) : (
           <>
