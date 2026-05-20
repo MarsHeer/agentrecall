@@ -57,6 +57,10 @@ async def init_db():
                 last_active_at TIMESTAMPTZ
             )
         """)
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_user_name "
+            "ON agents (user_id, LOWER(name))"
+        )
 
         # Memories
         await conn.execute("""

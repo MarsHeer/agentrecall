@@ -413,6 +413,62 @@ async def delete_agent(
         return MessageResponse(message="Agent deleted")
 
 
+@app.post("/v1/agents/resolve", response_model=AgentResponse)
+async def resolve_agent(
+    req: AgentCreate,
+    user: dict = Depends(get_current_user),
+):
+    """Find agent by name or create it. Atomic — no duplicates.
+    Handles race conditions via unique index on (user_id, LOWER(name))."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Find existing agent by name (case-insensitive)
+        row = await conn.fetchrow(
+            "SELECT id, name, memory_count, created_at, last_active_at FROM agents WHERE user_id = $1 AND LOWER(name) = LOWER($2)",
+            user["user_id"],
+            req.name,
+        )
+        if row:
+            return AgentResponse(
+                id=str(row["id"]),
+                name=row["name"],
+                memory_count=row["memory_count"],
+                created_at=row["created_at"].isoformat(),
+                last_active_at=row["last_active_at"].isoformat() if row["last_active_at"] else None,
+            )
+        
+        # Create new agent — if race condition, retry find
+        try:
+            row = await conn.fetchrow(
+                "INSERT INTO agents (user_id, name) VALUES ($1, $2) RETURNING id, name, memory_count, created_at, last_active_at",
+                user["user_id"],
+                req.name,
+            )
+            return AgentResponse(
+                id=str(row["id"]),
+                name=row["name"],
+                memory_count=row["memory_count"],
+                created_at=row["created_at"].isoformat(),
+                last_active_at=None,
+            )
+        except Exception:
+            # Race condition — another request created it first
+            row = await conn.fetchrow(
+                "SELECT id, name, memory_count, created_at, last_active_at FROM agents WHERE user_id = $1 AND LOWER(name) = LOWER($2)",
+                user["user_id"],
+                req.name,
+            )
+            if row:
+                return AgentResponse(
+                    id=str(row["id"]),
+                    name=row["name"],
+                    memory_count=row["memory_count"],
+                    created_at=row["created_at"].isoformat(),
+                    last_active_at=row["last_active_at"].isoformat() if row["last_active_at"] else None,
+                )
+            raise
+
+
 @app.get("/v1/agents/{agent_id}/count", response_model=CountResponse)
 async def count_memories(
     agent_id: str,
