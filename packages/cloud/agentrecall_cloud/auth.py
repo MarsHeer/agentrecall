@@ -1,7 +1,7 @@
 import hashlib
 import secrets
 import jwt
-from fastapi import HTTPException, Security, Request
+from fastapi import HTTPException, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from agentrecall_cloud.config import config
 from agentrecall_cloud.database import get_pool
@@ -24,9 +24,13 @@ def generate_api_key() -> str:
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Security(security),
 ) -> dict:
-    """Authenticate via JWT (dashboard) or API key (agents).
+    """Authenticate via JWT (dashboard) or API key (agent).
 
-    Returns dict with user_id and source.
+    JWT returns:  {"user_id": "...", "source": "jwt"}
+    API key returns: {"user_id": "...", "agent_id": "...", "source": "api_key"}
+
+    The agent_id from the API key means the agent is implicit —
+    no need to pass agent_id in requests.
     """
     if not credentials:
         raise HTTPException(status_code=401, detail="Missing authorization")
@@ -40,12 +44,12 @@ async def get_current_user(
     except jwt.InvalidTokenError:
         pass
 
-    # Try API key (agent SDK)
+    # Try API key (agent SDK) — returns the tied agent_id
     key_hash = hash_api_key(token)
     pool = await get_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id, user_id FROM api_keys WHERE key_hash = $1 AND is_active = true",
+            "SELECT id, user_id, agent_id FROM api_keys WHERE key_hash = $1 AND is_active = true",
             key_hash,
         )
         if row:
@@ -53,7 +57,11 @@ async def get_current_user(
             await conn.execute(
                 "UPDATE api_keys SET last_used_at = now() WHERE id = $1", row["id"]
             )
-            return {"user_id": str(row["user_id"]), "source": "api_key"}
+            return {
+                "user_id": str(row["user_id"]),
+                "agent_id": str(row["agent_id"]),
+                "source": "api_key",
+            }
 
     raise HTTPException(status_code=401, detail="Invalid token or API key")
 

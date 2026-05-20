@@ -31,12 +31,12 @@ async def init_db():
     """Run migrations to initialize the database."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # Users are managed by Supabase Auth
-        # API Keys
+        # API Keys — agent-specific tokens
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS api_keys (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 user_id UUID NOT NULL,
+                agent_id UUID NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
                 key_hash TEXT NOT NULL,
                 key_prefix TEXT NOT NULL,
                 name TEXT DEFAULT 'default',
@@ -115,8 +115,7 @@ async def init_db():
 
         logger.info("Database initialized successfully")
 
-        # ─── AI Processing Migration (v2) ──────────────────────────────
-        # Add entities table for graph relationships
+        # AI Processing tables
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS entities (
                 id BIGSERIAL PRIMARY KEY,
@@ -133,7 +132,6 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name)"
         )
 
-        # Add relationships table
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS relationships (
                 id BIGSERIAL PRIMARY KEY,
@@ -154,16 +152,39 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_relationships_target ON relationships(target)"
         )
 
-        # Add AI processing status to memories
-        await conn.execute("""
-            ALTER TABLE memories ADD COLUMN IF NOT EXISTS ai_processed BOOLEAN DEFAULT false
+        # AI processing columns on memories
+        await conn.execute(
+            "ALTER TABLE memories ADD COLUMN IF NOT EXISTS ai_processed BOOLEAN DEFAULT false"
+        )
+        await conn.execute(
+            "ALTER TABLE memories ADD COLUMN IF NOT EXISTS summary TEXT DEFAULT ''"
+        )
+        await conn.execute(
+            "ALTER TABLE memories ADD COLUMN IF NOT EXISTS keywords TEXT[] DEFAULT '{}'"
+        )
+
+        # Migration: add agent_id to api_keys if missing (backfill from first agent)
+        has_agent_id = await conn.fetchval("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'api_keys' AND column_name = 'agent_id'
+            )
         """)
-        await conn.execute("""
-            ALTER TABLE memories ADD COLUMN IF NOT EXISTS summary TEXT DEFAULT ''
-        """)
-        await conn.execute("""
-            ALTER TABLE memories ADD COLUMN IF NOT EXISTS keywords TEXT[] DEFAULT '{}'
-        """)
+        if not has_agent_id:
+            await conn.execute(
+                "ALTER TABLE api_keys ADD COLUMN agent_id UUID REFERENCES agents(id) ON DELETE CASCADE"
+            )
+            # Backfill: link existing keys to user's first agent
+            await conn.execute("""
+                UPDATE api_keys SET agent_id = (
+                    SELECT a.id FROM agents a WHERE a.user_id = api_keys.user_id
+                    ORDER BY a.created_at ASC LIMIT 1
+                ) WHERE agent_id IS NULL
+            """)
+            await conn.execute(
+                "ALTER TABLE api_keys ALTER COLUMN agent_id SET NOT NULL"
+            )
+            logger.info("Migration: added agent_id to api_keys")
 
 
 # Extended init for auth_users table
@@ -180,12 +201,10 @@ async def init_auth():
             )
         """)
 
-        # Add email_verified column (idempotent migration)
-        await conn.execute("""
-            ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT false
-        """)
+        await conn.execute(
+            "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT false"
+        )
 
-        # Create email_verifications table for email verification codes
         await conn.execute("""
              CREATE TABLE IF NOT EXISTS email_verifications (
                  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

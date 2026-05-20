@@ -1,13 +1,12 @@
 from pydantic import BaseModel, Field
 from typing import Optional
-from datetime import datetime
 
 
 # --- Memory ---
 
 class MemoryCreate(BaseModel):
     content: str
-    agent_id: str
+    agent_id: Optional[str] = None  # Optional: inferred from API key token
     category: Optional[str] = None
     importance: str = "medium"
     metadata: dict = Field(default_factory=dict)
@@ -69,12 +68,14 @@ class AgentResponse(BaseModel):
 
 class ApiKeyCreate(BaseModel):
     name: str = "default"
+    agent_id: str  # Required: which agent this key is for
 
 
 class ApiKeyResponse(BaseModel):
     id: str
     name: str
     key_prefix: str
+    agent_id: Optional[str] = None
     created_at: str
     last_used_at: Optional[str] = None
 
@@ -120,7 +121,6 @@ class MessageResponse(BaseModel):
 
 
 # --- Graph ---
-
 
 class EntityResponse(BaseModel):
     name: str
