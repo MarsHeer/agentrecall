@@ -1218,11 +1218,31 @@ async def get_me(user: dict = Depends(get_current_user)):
 
 @app.delete("/v1/auth/delete")
 async def delete_account(user: dict = Depends(get_current_user)):
-    """Delete user and all associated data."""
+    """Delete user and all associated data.
+
+    If the user has an active Stripe subscription, it is cancelled first
+    to prevent further charges.
+    """
     pool = await get_pool()
     user_id = user["user_id"]
 
     async with pool.acquire() as conn:
+        # Cancel Stripe subscription before deleting anything
+        if config.stripe_secret_key:
+            sub = await conn.fetchrow(
+                "SELECT stripe_subscription_id, stripe_customer_id FROM subscriptions WHERE user_id = $1",
+                user_id,
+            )
+            if sub and sub.get("stripe_subscription_id"):
+                try:
+                    stripe.Subscription.delete(sub["stripe_subscription_id"])
+                    logger.info("Cancelled Stripe subscription %s for user %s", sub["stripe_subscription_id"], user_id)
+                except Exception as e:
+                    logger.warning("Failed to cancel Stripe subscription for user %s: %s", user_id, e)
+                    # Continue with deletion even if Stripe cancel fails —
+                    # the user explicitly requested account deletion
+
+        # Cascade delete all user data
         async with conn.transaction():
             await conn.execute(
                 "DELETE FROM memories WHERE agent_id IN (SELECT id FROM agents WHERE user_id = $1)",
