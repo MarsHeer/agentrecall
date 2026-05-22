@@ -167,3 +167,66 @@ export async function deleteApiKey(id: string): Promise<void> {
   const res = await authFetch(`/v1/api-keys/${id}`, { method: "DELETE" });
   if (!res.ok) throw new Error("Failed to revoke API key");
 }
+
+// ─── Graph ───────────────────────────────────────────────────────
+
+export interface GraphEntity {
+  name: string;
+  type: string;
+  memory_count: number;
+  first_seen: string | null;
+  last_seen: string | null;
+}
+
+export interface GraphRelationship {
+  source: string;
+  target: string;
+  relation_type: string;
+  memory_ids: number[];
+  strength: number;
+}
+
+export interface GraphStats {
+  total_entities: number;
+  total_relationships: number;
+  total_memories_in_graph: number;
+  entity_types: Record<string, number>;
+  top_entities: Array<{ name: string; connections: number }>;
+}
+
+export async function getGraphStats(agentId: string): Promise<GraphStats> {
+  const res = await authFetch("/v1/graph/stats?agent_id=" + agentId);
+  if (!res.ok) throw new Error("Failed to fetch graph stats");
+  return res.json();
+}
+
+export async function getGraphEntities(
+  agentId: string,
+  type?: string,
+  limit: number = 100
+): Promise<GraphEntity[]> {
+  const params = new URLSearchParams({ agent_id: agentId, limit: String(limit) });
+  if (type) params.set("type", type);
+  const res = await authFetch("/v1/graph/entities?" + params.toString());
+  if (!res.ok) throw new Error("Failed to fetch graph entities");
+  return res.json();
+}
+
+export async function getGraphRelationships(
+  agentId: string,
+  source?: string,
+  target?: string,
+  limit: number = 200
+): Promise<GraphRelationship[]> {
+  const params = new URLSearchParams({ agent_id: agentId, limit: String(limit) });
+  if (source) params.set("source", source);
+  if (target) params.set("target", target);
+  const res = await authFetch("/v1/graph/relationships?" + params.toString());
+  if (!res.ok) throw new Error("Failed to fetch graph relationships");
+  return res.json();
+}
+
+export async function deleteAccount(): Promise<void> {
+  const res = await authFetch("/v1/auth/delete", { method: "DELETE" });
+  if (!res.ok) throw new Error("Failed to delete account");
+}
